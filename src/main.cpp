@@ -21,9 +21,11 @@
 #include <ESPAsyncWebServer.h>   // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ArduinoOTA.h>
-
 AsyncWebServer asyncWebServer(80);
 DNSServer dnsServer;
+
+#include "Button2.h"
+Button2 button3, button4, button5, button6;
 
 // SPI GPIOs
 #define SD_CS 13
@@ -78,6 +80,52 @@ Audio audio;
 
 // #####################################################################
 
+void setVolume(int value)
+{
+  // Serial.printf("Volume set to: %d\r\n", value);
+  if (value > 100)
+  {
+    value = 100;
+  }
+  if (value < 0)
+  {
+    value = 0;
+  }
+
+  volume = value;
+#ifdef DAC2USE_ES8388
+  dac.volume(ES8388::ES_MAIN, value);
+  dac.volume(ES8388::ES_OUT1, value);
+  dac.volume(ES8388::ES_OUT2, value);
+  dac.mute(ES8388::ES_OUT1, false);
+  dac.mute(ES8388::ES_OUT2, false);
+  dac.mute(ES8388::ES_MAIN, false);
+#endif
+
+#ifdef DAC2USE_AC101
+  dac.setVolumeSpeaker(value);
+  dac.setVolumeHeadphone(value);
+#endif
+}
+
+void buttonClick(Button2 &btn)
+{
+  if (btn == button3)
+  {
+    setVolume(volume - 1);
+  }
+  else if (btn == button4)
+  {
+    setVolume(volume + 1);
+  }
+  else if (btn == button5)
+  {
+  }
+  else if (btn == button6)
+  {
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -99,6 +147,20 @@ void setup()
   Serial.printf_P(PSTR("SketchSize:        %d\r\n"), ESP.getSketchSize());
   Serial.printf_P(PSTR("FreeSketchSpace:   %d\r\n"), ESP.getFreeSketchSpace());
   Serial.printf_P(PSTR("ArduinoStack:      %d\r\n"), getArduinoLoopTaskStackSize());
+
+  pinMode(BUTTON_3_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_4_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_5_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_6_PIN, INPUT_PULLUP);
+
+  button3.begin(BUTTON_3_PIN);
+  button3.setClickHandler(buttonClick);
+  button4.begin(BUTTON_4_PIN);
+  button4.setClickHandler(buttonClick);
+  button5.begin(BUTTON_5_PIN);
+  button5.setClickHandler(buttonClick);
+  button6.begin(BUTTON_6_PIN);
+  button6.setClickHandler(buttonClick);
 
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
@@ -135,19 +197,8 @@ void setup()
   }
   Serial.printf("OK\n");
 
-#ifdef DAC2USE_ES8388
-  dac.volume(ES8388::ES_MAIN, volume);
-  dac.volume(ES8388::ES_OUT1, volume);
-  dac.volume(ES8388::ES_OUT2, volume);
-  dac.mute(ES8388::ES_OUT1, false);
-  dac.mute(ES8388::ES_OUT2, false);
-  dac.mute(ES8388::ES_MAIN, false);
-#endif
+  setVolume(volume);
 
-#ifdef DAC2USE_AC101
-  dac.SetVolumeSpeaker(volume);
-  dac.SetVolumeHeadphone(volume);
-#endif
   //  ac.DumpRegisters();
 
   // Enable amplifier
@@ -170,6 +221,10 @@ void setup()
 void loop()
 {
   audio.loop();
+  button3.loop();
+  button4.loop();
+  button5.loop();
+  button6.loop();
   ArduinoOTA.handle();
 }
 
