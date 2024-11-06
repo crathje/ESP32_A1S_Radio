@@ -18,6 +18,13 @@
 #endif
 #include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
 
+#include <ESPAsyncWebServer.h>   // https://github.com/me-no-dev/ESPAsyncWebServer
+#include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
+#include <ArduinoOTA.h>
+
+AsyncWebServer asyncWebServer(80);
+DNSServer dnsServer;
+
 // SPI GPIOs
 #define SD_CS 13
 #define SPI_MOSI 15
@@ -57,9 +64,6 @@
 #define GPIO_PA_EN 21
 
 // Switch S1: 1-OFF, 2-ON, 3-ON, 4-ON, 5-ON
-
-String ssid = "SomeSSID";
-String password = "SomePASSWORD";
 
 #ifdef DAC2USE_AC101
 static AC101 dac; // AC101
@@ -103,19 +107,25 @@ void setup()
 
   SD.begin(SD_CS);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid.c_str(), password.c_str());
+  AsyncWiFiManager wifiManager(&asyncWebServer, &dnsServer);
+  wifiManager.autoConnect();
 
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print(".");
-    delay(100);
-  }
+  // WiFi.mode(WIFI_STA);
+  // WiFi.begin("SSID", "Password...");
+  // while (WiFi.status() != WL_CONNECTED)
+  // {
+  //   Serial.print(".");
+  //   delay(100);
+  // }
 
   Serial.printf_P(PSTR("Connected\r\nRSSI: "));
   Serial.print(WiFi.RSSI());
   Serial.print(" IP: ");
   Serial.println(WiFi.localIP());
+
+  ArduinoOTA.setHostname(wifiManager.getConfiguredSTASSID().c_str());
+  //  ArduinoOTA.setPassword("secretPass");
+  ArduinoOTA.begin();
 
   Serial.printf("Connect to DAC codec... ");
   while (not dac.begin(IIC_DATA, IIC_CLK))
@@ -160,6 +170,7 @@ void setup()
 void loop()
 {
   audio.loop();
+  ArduinoOTA.handle();
 }
 
 // optional
