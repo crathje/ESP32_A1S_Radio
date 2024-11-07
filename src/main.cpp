@@ -43,14 +43,19 @@ a:link {
 <a href="volup" target="dummy">&#x1F50A;</a>
 <br />
 <br />
-https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true<br />
-http://streams.radiobob.de/bob-shlive/mp3-192/streams.radiobob.de/play.m3u<br />
+<pre>
+https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
+https://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
+https://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
+https://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
+https://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
+</pre>
 <br />
 <br />
 
 <form action="playurl" target="dummy">
 <input type="text" name="playurl"></input>
-<input type="submit" value="Submit">
+<input type="submit" value="play url">
 </form> 
 <br />
 <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
