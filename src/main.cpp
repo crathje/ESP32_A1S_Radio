@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
-// based on https://github.com/schreibfaul1/ESP32-audioI2S/blob/master/examples/ESP32_A1S/ESP32_A1S.ino
+// based on
+// https://github.com/schreibfaul1/ESP32-audioI2S/blob/master/examples/ESP32_A1S/ESP32_A1S.ino
 
 // default some DAC
 #ifndef DAC2USE_ES8388
@@ -16,13 +17,47 @@
 #ifdef DAC2USE_ES8388
 #include "ES8388.h" // https://github.com/maditnerd/es8388
 #endif
-#include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
-
+#include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>   // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
-#include <ArduinoOTA.h>
+
+#include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
 AsyncWebServer asyncWebServer(80);
 DNSServer dnsServer;
+char hostname[32 + 1];
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+a:link {
+  text-decoration: none;
+  font-size: 40px;
+}
+</style>
+</head>
+<body>
+<a href="playpause" target="dummy">&#x23ef;</a>
+<a href="voldown" target="dummy">&#x1f509;</a>
+<a href="volup" target="dummy">&#x1F50A;</a>
+<br />
+<br />
+https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true<br />
+http://streams.radiobob.de/bob-shlive/mp3-192/streams.radiobob.de/play.m3u<br />
+<br />
+<br />
+
+<form action="playurl" target="dummy">
+<input type="text" name="playurl"></input>
+<input type="submit" value="Submit">
+</form> 
+<br />
+<iframe src="" name="dummy" style="visibility:hidden;"></iframe>
+
+</body>
+</html>
+)rawliteral";
 
 #include "Button2.h"
 Button2 button3, button4, button5, button6;
@@ -108,18 +143,23 @@ void setVolume(int value)
 #endif
 }
 
+void actionPlayPause() { audio.pauseResume(); }
+void actionVolumeUp() { setVolume(volume + 1); }
+void actionVolumeDown() { setVolume(volume - 1); }
+
 void buttonClick(Button2 &btn)
 {
   if (btn == button3)
   {
-    setVolume(volume - 1);
+    actionVolumeDown();
   }
   else if (btn == button4)
   {
-    setVolume(volume + 1);
+    actionVolumeUp();
   }
   else if (btn == button5)
   {
+    actionPlayPause();
   }
   else if (btn == button6)
   {
@@ -131,9 +171,11 @@ void setup()
   Serial.begin(115200);
   Serial.println("\r\nReset");
 
-  uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
+  uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC
+                                       // address(length: 6 bytes).
   Serial.println(F("===== CHIP INFO ====="));
-  Serial.printf_P(PSTR("ChipID:            %04X%08X\r\n"), (uint16_t)(chipid >> 32), (uint32_t)chipid);
+  Serial.printf_P(PSTR("ChipID:            %04X%08X\r\n"),
+                  (uint16_t)(chipid >> 32), (uint32_t)chipid);
   Serial.printf_P(PSTR("ChipCores:         %d\r\n"), ESP.getChipCores());
   Serial.printf_P(PSTR("CpuFreqMHz:        %3d\r\n"), ESP.getCpuFreqMHz());
   Serial.printf_P(PSTR("ChipRevision:      %d\r\n"), ESP.getChipRevision());
@@ -141,12 +183,17 @@ void setup()
   Serial.printf_P(PSTR("CycleCount:        %3d\r\n"), ESP.getCycleCount());
   Serial.printf_P(PSTR("SdkVersion:        %s\r\n"), ESP.getSdkVersion());
   Serial.printf_P(PSTR("FlashChipSize:     %3d\r\n"), ESP.getFlashChipSize());
-  // DebugHWSerial.printf("FlashChipRealSize: %3d\n"), ESP.getFlashChipRealSize());
+  // DebugHWSerial.printf("FlashChipRealSize: %3d\n"),
+  // ESP.getFlashChipRealSize());
   Serial.printf_P(PSTR("FlashChipSpeed:    %3d\r\n"), ESP.getFlashChipSpeed());
   Serial.printf_P(PSTR("FlashChipMode:     %d\r\n"), ESP.getFlashChipMode());
   Serial.printf_P(PSTR("SketchSize:        %d\r\n"), ESP.getSketchSize());
   Serial.printf_P(PSTR("FreeSketchSpace:   %d\r\n"), ESP.getFreeSketchSpace());
-  Serial.printf_P(PSTR("ArduinoStack:      %d\r\n"), getArduinoLoopTaskStackSize());
+  Serial.printf_P(PSTR("ArduinoStack:      %d\r\n"),
+                  getArduinoLoopTaskStackSize());
+  Serial.printf_P(PSTR("ArduinoVersion:    %d.%d.%d\r\n"),
+                  ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR,
+                  ESP_ARDUINO_VERSION_PATCH);
 
   pinMode(BUTTON_3_PIN, INPUT_PULLUP);
   pinMode(BUTTON_4_PIN, INPUT_PULLUP);
@@ -167,10 +214,49 @@ void setup()
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
   SPI.setFrequency(1000000);
 
-  SD.begin(SD_CS);
+  Serial.println(F("===== SD CARD INFO ====="));
+  if (SD.begin(SD_CS))
+  {
+    Serial.printf_P(PSTR("cardType:   %d\r\n"), SD.cardType());
+    Serial.printf_P(PSTR("cardSize:   %lld\r\n"), SD.cardSize());
+    Serial.printf_P(PSTR("totalBytes: %lld\r\n"), SD.totalBytes());
+    Serial.printf_P(PSTR("usedBytes:  %lld\r\n"), SD.usedBytes());
+  }
+  else
+  {
+    Serial.println(F("SD Init failed."));
+  }
 
   AsyncWiFiManager wifiManager(&asyncWebServer, &dnsServer);
-  wifiManager.autoConnect();
+  sprintf(hostname, "A1S-Radio-%04X%08X", (uint16_t)(chipid >> 32),
+          (uint32_t)chipid);
+  WiFi.setHostname(hostname);
+  wifiManager.autoConnect(hostname, NULL);
+
+  asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+                    { request->send_P(200, "text/html", index_html); });
+  asyncWebServer.on("/playpause", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+    request->send(200, "text/plain", "OK");
+    actionPlayPause(); });
+  asyncWebServer.on("/playurl", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+    if (request->hasParam("playurl")) {
+      String url = request->getParam("playurl")->value();
+      audio.connecttohost(url.c_str());
+      request->send(200, "text/plain", "OK");
+      return;
+    }
+    request->send(200, "text/plain", "FAILED"); });
+  asyncWebServer.on("/volup", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+    request->send(200, "text/plain", "OK");
+    actionVolumeUp(); });
+  asyncWebServer.on("/voldown", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+    request->send(200, "text/plain", "OK");
+    actionVolumeDown(); });
+  asyncWebServer.begin();
 
   // WiFi.mode(WIFI_STA);
   // WiFi.begin("SSID", "Password...");
@@ -183,7 +269,44 @@ void setup()
   Serial.printf_P(PSTR("Connected\r\nRSSI: "));
   Serial.print(WiFi.RSSI());
   Serial.print(" IP: ");
-  Serial.println(WiFi.localIP());
+  Serial.print(WiFi.localIP());
+  Serial.print(" Hostname: ");
+  Serial.println(WiFi.getHostname());
+
+  ArduinoOTA
+      .onStart([]()
+               {
+        digitalWrite(GPIO_PA_EN, LOW);
+// mute!
+#ifdef DAC2USE_ES8388
+        dac.mute(ES8388::ES_OUT1, true);
+        dac.mute(ES8388::ES_OUT2, true);
+        dac.mute(ES8388::ES_MAIN, true);
+#endif
+        audio.stopSong();
+
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+        else  // U_SPIFFS
+          type = "filesystem";
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS
+        // using SPIFFS.end()
+        Serial.println("Start updating " + type); })
+      .onError([](ota_error_t error)
+               {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR)
+          Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR)
+          Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR)
+          Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR)
+          Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR)
+          Serial.println("End Failed"); });
 
   ArduinoOTA.setHostname(wifiManager.getConfiguredSTASSID().c_str());
   //  ArduinoOTA.setPassword("secretPass");
@@ -213,7 +336,8 @@ void setup()
   // audio.connecttohost("http://s1-webradio.antenne.de/oldie-antenne");
   audio.connecttohost("https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
   //  audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
-  //  audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
+  //  audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe
+  //  stehlen.", "de");
 }
 
 //-----------------------------------------------------------------------
