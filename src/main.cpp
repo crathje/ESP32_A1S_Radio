@@ -38,8 +38,77 @@ const char index_html[] PROGMEM = R"rawliteral(
             text-decoration: none;
             font-size: 40px;
         }
+
+        div {
+            margin: 2px;
+        }
+
+        .lcd {
+            font-family: 'LCD', sans-serif;
+            border: 0px;
+            padding: 5px;
+            color: greenyellow;
+            background-color: black;
+            font-size: xx-large;
+        }
+
+        .buttonscontainer {
+            text-align: center;
+        }
+
+        .button {
+            border: none;
+            background-color: #cccccc;
+            padding: 15px 32px;
+            margin: auto;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: xx-large;
+            border-radius: 10px;
+            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+        }
+
+        .button:hover {
+            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 255, 0.80);
+        }
+
+        .button:active {
+            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(255, 0, 255, 0.80);
+        }
+
+        .station {
+            background-color: #cccccc;
+            text-decoration: none;
+            margin: 5px;
+        }
+
+        .station:hover {
+            background-color: rgb(86, 84, 204);
+        }
+
+        .volume-bar {
+            position: relative;
+            width: 100%;
+            background-color: #666666;
+            color: white;
+            font-weight: bolder;
+        }
+
+        .volume-bar-fill {
+            background-color: green;
+        }
+
+        .centered {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
     </style>
+    <link href="https://fonts.cdnfonts.com/css/lcd" rel="stylesheet">
     <script>
+        // develope is easier local
         var host = 'A1S-Radio-448026455F34.home'
         var websocket;
 
@@ -57,9 +126,25 @@ const char index_html[] PROGMEM = R"rawliteral(
         // websocket.onopen    = onOpen;
         // websocket.onclose   = onClose;
         // websocket.onmessage = onMessage; 
-        websocket.onmessage = function (event) {
-            document.getElementById('currentPlaying').innerHTML = event.data;
-        };
+
+        websocket.addEventListener("message", (event) => {
+            // console.log(event.data)
+            if (event.data.toString().includes("\t")) {
+                var splitted = event.data.toString().split("\t");
+                // console.debug(splitted[0])
+                switch (splitted[0]) {
+                    case 'C':
+                        document.getElementById('currentPlaying').innerHTML = splitted[1]
+                        break;
+                    case 'V':
+                        // document.getElementById('volume-bar-label').textContent = splitted[1]
+                        // console.log(document.getElementById('volume-bar-label'))
+                        document.getElementById('volume-bar-label').textContent = splitted[1]
+                        document.getElementById('volume-bar-fill').style.width = splitted[1] + '%'
+                        break;
+                }
+            }
+        });
         var xhr = new XMLHttpRequest();
         xhr.addEventListener("load", function () {
             var stations = this.responseText.trim().split("\n");
@@ -67,6 +152,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 var stationsDiv = document.getElementById('stations');
                 var ldiv = document.createElement('div');
                 // ldiv.style.border = '1px dashed grey';
+                ldiv.className = 'station';
                 ldiv.innerHTML = station;
                 ldiv.ondblclick = function () {
                     var xhr = new XMLHttpRequest();
@@ -85,13 +171,18 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 
 <body>
-    <a href="playpause" target="dummy">&#x23ef;</a>
-    <a href="voldown" target="dummy">&#x1f509;</a>
-    <a href="volup" target="dummy">&#x1F50A;</a><div id="currentPlaying" style="border: 1px dotted lightcoral; font-size: smaller;"></div>
-    <br />
+    <div id="currentPlaying" class="lcd"></div>
+    <div id="volume-bar" class="volume-bar">
+        <div id="volume-bar-label" class="centered">&nbsp;</div>
+        <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
+    </div>
+    <div id="buttons" class="buttonscontainer">
+        <a class="button" href="playpause" target="dummy">&#x23ef;</a>
+        <a class="button" href="voldown" target="dummy">&#x1f509;</a>
+        <a class="button" href="volup" target="dummy">&#x1F50A;</a>
+    </div>
     <br />
     <div id="stations"></div>
-    <br />
     <br />
     <form action="playurl" target="dummy">
         <input type="text" name="playurl"></input>
@@ -103,6 +194,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 </html>
 )rawliteral";
+
 const char stations[] PROGMEM = R"rawliteral(
 https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
 https://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
@@ -173,7 +265,8 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
   {
   case WS_EVT_CONNECT:
     // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-    client->text(lastPlayedUrl);
+    client->text("C\t" + String(lastPlayedUrl));
+    client->text("V\t" + String(volume));
     break;
   case WS_EVT_DISCONNECT:
     // Serial.printf("WebSocket client #%u disconnected\n", client->id());
@@ -213,6 +306,8 @@ void setVolume(int value)
   dac.setVolumeSpeaker(value);
   dac.setVolumeHeadphone(value);
 #endif
+
+  asyncWebSocket.textAll("V\t" + String(volume));
 }
 
 void actionPlayPause() { audio.pauseResume(); }
@@ -241,7 +336,7 @@ void buttonClick(Button2 &btn)
 void playUrl(const char *url)
 {
   strcpy(lastPlayedUrl, url);
-  asyncWebSocket.textAll(url);
+  asyncWebSocket.textAll("C\t" + String(url));
   audio.connecttohost(url);
 }
 
@@ -439,7 +534,7 @@ void loop()
   button4.loop();
   button5.loop();
   button6.loop();
-  ArduinoOTA.handle();
+  ArduinoOTA.handle();  
 }
 
 // optional
