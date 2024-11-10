@@ -23,45 +23,92 @@
 
 #include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
 AsyncWebServer asyncWebServer(80);
+AsyncWebSocket asyncWebSocket("/ws");
 DNSServer dnsServer;
 char hostname[32 + 1];
 
+char lastPlayedUrl[2048];
+
 const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
 <html>
+
 <head>
-<style>
-a:link {
-  text-decoration: none;
-  font-size: 40px;
-}
-</style>
+    <style>
+        a:link {
+            text-decoration: none;
+            font-size: 40px;
+        }
+    </style>
+    <script>
+        var host = 'A1S-Radio-448026455F34.home'
+        var websocket;
+
+
+        switch (window.location.protocol) {
+            case 'http:':
+            case 'https:':
+                host = window.location.host
+                break;
+            default:
+        }
+
+        ;
+        websocket = new WebSocket('ws://' + host + '/ws');
+        // websocket.onopen    = onOpen;
+        // websocket.onclose   = onClose;
+        // websocket.onmessage = onMessage; 
+        websocket.onmessage = function (event) {
+            document.getElementById('currentPlaying').innerHTML = event.data;
+        };
+        var xhr = new XMLHttpRequest();
+        xhr.addEventListener("load", function () {
+            var stations = this.responseText.trim().split("\n");
+            stations.forEach((station) => {
+                var stationsDiv = document.getElementById('stations');
+                var ldiv = document.createElement('div');
+                // ldiv.style.border = '1px dashed grey';
+                ldiv.innerHTML = station;
+                ldiv.ondblclick = function () {
+                    var xhr = new XMLHttpRequest();
+                    xhr.timeout = 2000;
+                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + this.innerHTML, true);
+                    xhr.send();
+
+                };
+                stationsDiv.appendChild(ldiv);
+            });
+        });
+
+        xhr.open("GET", "http://" + host + "/stations");
+        xhr.send();
+    </script>
 </head>
+
 <body>
-<a href="playpause" target="dummy">&#x23ef;</a>
-<a href="voldown" target="dummy">&#x1f509;</a>
-<a href="volup" target="dummy">&#x1F50A;</a>
-<br />
-<br />
-<pre>
+    <a href="playpause" target="dummy">&#x23ef;</a>
+    <a href="voldown" target="dummy">&#x1f509;</a>
+    <a href="volup" target="dummy">&#x1F50A;</a><div id="currentPlaying" style="border: 1px dotted lightcoral; font-size: smaller;"></div>
+    <br />
+    <br />
+    <div id="stations"></div>
+    <br />
+    <br />
+    <form action="playurl" target="dummy">
+        <input type="text" name="playurl"></input>
+        <input type="submit" value="play url">
+    </form>
+    <br />
+    <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
+</body>
+
+</html>
+)rawliteral";
+const char stations[] PROGMEM = R"rawliteral(
 https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
 https://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
 https://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
 https://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
 https://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
-</pre>
-<br />
-<br />
-
-<form action="playurl" target="dummy">
-<input type="text" name="playurl"></input>
-<input type="submit" value="play url">
-</form> 
-<br />
-<iframe src="" name="dummy" style="visibility:hidden;"></iframe>
-
-</body>
-</html>
 )rawliteral";
 
 #include "Button2.h"
@@ -119,6 +166,26 @@ int volume = 70; // 0...100
 Audio audio;
 
 // #####################################################################
+void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+                      void *arg, uint8_t *data, size_t len)
+{
+  switch (type)
+  {
+  case WS_EVT_CONNECT:
+    // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    client->text(lastPlayedUrl);
+    break;
+  case WS_EVT_DISCONNECT:
+    // Serial.printf("WebSocket client #%u disconnected\n", client->id());
+    break;
+  case WS_EVT_DATA:
+    // handleWebSocketMessage(arg, data, len);
+    break;
+  case WS_EVT_PONG:
+  case WS_EVT_ERROR:
+    break;
+  }
+}
 
 void setVolume(int value)
 {
@@ -169,6 +236,13 @@ void buttonClick(Button2 &btn)
   else if (btn == button6)
   {
   }
+}
+
+void playUrl(const char *url)
+{
+  strcpy(lastPlayedUrl, url);
+  asyncWebSocket.textAll(url);
+  audio.connecttohost(url);
 }
 
 void setup()
@@ -238,8 +312,15 @@ void setup()
   WiFi.setHostname(hostname);
   wifiManager.autoConnect(hostname, NULL);
 
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+
   asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
                     { request->send_P(200, "text/html", index_html); });
+  asyncWebServer.on("/stations", HTTP_GET, [](AsyncWebServerRequest *request)
+                    { request->send_P(200, "text/plain", stations); });
   asyncWebServer.on("/playpause", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
     request->send(200, "text/plain", "OK");
@@ -248,7 +329,7 @@ void setup()
                     {
     if (request->hasParam("playurl")) {
       String url = request->getParam("playurl")->value();
-      audio.connecttohost(url.c_str());
+      playUrl(url.c_str());
       request->send(200, "text/plain", "OK");
       return;
     }
@@ -261,6 +342,9 @@ void setup()
                     {
     request->send(200, "text/plain", "OK");
     actionVolumeDown(); });
+  asyncWebSocket.onEvent(onWebSocketEvent);
+  asyncWebServer.addHandler(&asyncWebSocket);
+
   asyncWebServer.begin();
 
   // WiFi.mode(WIFI_STA);
@@ -337,12 +421,13 @@ void setup()
   audio.setVolume(10); // 0...21
 
   // audio.connecttoFS(SD, "/320k_test.mp3");
-  //  audio.connecttoSD("/Banana Boat Song - Harry Belafonte.mp3");
+  // audio.connecttoSD("/Banana Boat Song - Harry Belafonte.mp3");
   // audio.connecttohost("http://s1-webradio.antenne.de/oldie-antenne");
-  audio.connecttohost("https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
-  //  audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
-  //  audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe
-  //  stehlen.", "de");
+  // audio.connecttohost("https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
+  // audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
+  // audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
+
+  playUrl("https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
 }
 
 //-----------------------------------------------------------------------
