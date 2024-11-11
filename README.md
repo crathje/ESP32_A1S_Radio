@@ -1,5 +1,8 @@
 [![Actions Status](https://github.com/crathje/ESP32_A1S_Radio/workflows/PlatformIO%20CI/badge.svg)](https://github.com/crathje/ESP32_A1S_Radio/actions)
 
+![Early web interface screenshot](misc/a1s-radio-screenshot.png?raw=true)
+
+
 # ESP32 A1S Radio
 
 Very basic PlatformIO project to play some stream using the [ESP32-Audio-kit](https://docs.ai-thinker.com/en/esp32-audio-kit).
