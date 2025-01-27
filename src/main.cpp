@@ -47,9 +47,18 @@ const char index_html[] PROGMEM = R"rawliteral(
             font-family: 'LCD', sans-serif;
             border: 0px;
             padding: 5px;
-            color: greenyellow;
+            color: mediumaquamarine;
             background-color: black;
             font-size: xx-large;
+        }
+
+        .smalllcd {
+            font-family: 'LCD', sans-serif;
+            border: 0px;
+            padding: 5px;
+            color: greenyellow;
+            background-color: black;
+            font-size: large;
         }
 
         .buttonscontainer {
@@ -130,18 +139,35 @@ const char index_html[] PROGMEM = R"rawliteral(
         websocket.addEventListener("message", (event) => {
             // console.log(event.data)
             if (event.data.toString().includes("\t")) {
-                var splitted = event.data.toString().split("\t");
-                // console.debug(splitted[0])
+                var splitted = event.data.toString().split("\t")
+                var payload = event.data.toString().substring(splitted[0].length + 1).trim()
+                // console.debug(splitted, splitted[0].length)
+                // console.debug("+" + payload + "+")
                 switch (splitted[0]) {
                     case 'C':
-                        document.getElementById('currentPlaying').innerHTML = splitted[1]
-                        break;
+                        document.getElementById('currentPlaying').innerHTML = payload
+                        document.getElementById('station').innerHTML = '&#x2047;'
+                        document.getElementById('streamInfo').innerHTML = '&#x2047;'
+                        break
                     case 'V':
                         // document.getElementById('volume-bar-label').textContent = splitted[1]
                         // console.log(document.getElementById('volume-bar-label'))
-                        document.getElementById('volume-bar-label').textContent = splitted[1]
-                        document.getElementById('volume-bar-fill').style.width = splitted[1] + '%'
-                        break;
+                        document.getElementById('volume-bar-label').textContent = payload
+                        document.getElementById('volume-bar-fill').style.width = payload + '%'
+                        break
+                    case 'ASTA':
+                        if (payload.length > 0) {
+                            document.getElementById('station').textContent = payload
+                        }
+                        break
+                    case 'ASTT':
+                        if (payload.length > 0) {
+                          document.getElementById('streamInfo').textContent = payload
+                        }
+                        break
+                    default: 
+                        // console.debug("unhandled websocket:", event.data)
+                        break
                 }
             }
         });
@@ -171,11 +197,14 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 
 <body>
-    <div id="currentPlaying" class="lcd"></div>
+    <div id="streamInfo" class="lcd"></div>
+    <div id="station" class="smalllcd"></div>
+    <div id="currentPlaying" class="smalllcd"></div>
     <div id="volume-bar" class="volume-bar">
         <div id="volume-bar-label" class="centered">&nbsp;</div>
         <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
-    </div>
+    </div>    
+    <br />
     <div id="buttons" class="buttonscontainer">
         <a class="button" href="playpause" target="dummy">&#x23ef;</a>
         <a class="button" href="voldown" target="dummy">&#x1f509;</a>
@@ -188,7 +217,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <input type="text" name="playurl"></input>
         <input type="submit" value="play url">
     </form>
-    <br />
+    <br />    
+
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
 </body>
 
@@ -542,26 +572,36 @@ void audio_info(const char *info)
 {
   Serial.print("info        ");
   Serial.println(info);
+  
+  // asyncWebSocket.textAll("AINF\t" + String(info));
 }
 void audio_id3data(const char *info)
 { // id3 metadata
   Serial.print("id3data     ");
   Serial.println(info);
+
+  asyncWebSocket.textAll("AID3\t" + String(info));
 }
 void audio_eof_mp3(const char *info)
 { // end of file
   Serial.print("eof_mp3     ");
   Serial.println(info);
+  
+  asyncWebSocket.textAll("AEM3\t" + String(info));
 }
 void audio_showstation(const char *info)
 {
   Serial.print("station     ");
   Serial.println(info);
+
+  asyncWebSocket.textAll("ASTA\t" + String(info));
 }
 void audio_showstreamtitle(const char *info)
 {
   Serial.print("streamtitle ");
   Serial.println(info);
+
+  asyncWebSocket.textAll("ASTT\t" + String(info));
 }
 void audio_bitrate(const char *info)
 {
