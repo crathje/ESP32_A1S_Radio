@@ -20,6 +20,7 @@
 #include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>   // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
+#include <ESP32Encoder.h> // https://github.com/madhephaestus/ESP32Encoder
 
 #include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
 AsyncWebServer asyncWebServer(80);
@@ -226,7 +227,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 const char stations[] PROGMEM = R"rawliteral(
-https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
+http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
 https://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
 https://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
 https://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
@@ -265,7 +266,7 @@ Button2 button3, button4, button5, button6;
 #define IIC_DATA 33
 
 // buttons
-// #define BUTTON_2_PIN 13             // shared mit SPI_CS
+// #define BUTTON_2_PIN 13             // shared with SPI_CS
 #define BUTTON_3_PIN 19
 #define BUTTON_4_PIN 23
 #define BUTTON_5_PIN 18 // Stop
@@ -273,6 +274,12 @@ Button2 button3, button4, button5, button6;
 
 // amplifier enable
 #define GPIO_PA_EN 21
+
+#define ROTARY_ENCODER_A_CLK_PIN 22
+#define ROTARY_ENCODER_B_DT_PIN 19
+#define ROTARY_ENCODER_BUTTON_PIN -1
+#define ROTARY_ENCODER_STEPS 2
+ESP32Encoder rotaryEncoder;
 
 // Switch S1: 1-OFF, 2-ON, 3-ON, 4-ON, 5-ON
 
@@ -346,13 +353,8 @@ void actionVolumeDown() { setVolume(volume - 1); }
 
 void buttonClick(Button2 &btn)
 {
-  if (btn == button3)
+  if (btn == button4)
   {
-    actionVolumeDown();
-  }
-  else if (btn == button4)
-  {
-    actionVolumeUp();
   }
   else if (btn == button5)
   {
@@ -360,6 +362,7 @@ void buttonClick(Button2 &btn)
   }
   else if (btn == button6)
   {
+    actionVolumeUp();
   }
 }
 
@@ -399,13 +402,13 @@ void setup()
                   ESP_ARDUINO_VERSION_MAJOR, ESP_ARDUINO_VERSION_MINOR,
                   ESP_ARDUINO_VERSION_PATCH);
 
-  pinMode(BUTTON_3_PIN, INPUT_PULLUP);
+  // pinMode(BUTTON_3_PIN, INPUT_PULLUP);
   pinMode(BUTTON_4_PIN, INPUT_PULLUP);
   pinMode(BUTTON_5_PIN, INPUT_PULLUP);
   pinMode(BUTTON_6_PIN, INPUT_PULLUP);
 
-  button3.begin(BUTTON_3_PIN);
-  button3.setClickHandler(buttonClick);
+  // button3.begin(BUTTON_3_PIN);
+  // button3.setClickHandler(buttonClick);
   button4.begin(BUTTON_4_PIN);
   button4.setClickHandler(buttonClick);
   button5.begin(BUTTON_5_PIN);
@@ -471,14 +474,6 @@ void setup()
   asyncWebServer.addHandler(&asyncWebSocket);
 
   asyncWebServer.begin();
-
-  // WiFi.mode(WIFI_STA);
-  // WiFi.begin("SSID", "Password...");
-  // while (WiFi.status() != WL_CONNECTED)
-  // {
-  //   Serial.print(".");
-  //   delay(100);
-  // }
 
   Serial.printf_P(PSTR("Connected\r\nRSSI: "));
   Serial.print(WiFi.RSSI());
@@ -552,7 +547,12 @@ void setup()
   // audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
   // audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
 
-  playUrl("https://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
+  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1) {
+    rotaryEncoder.attachHalfQuad(ROTARY_ENCODER_B_DT_PIN, ROTARY_ENCODER_A_CLK_PIN);
+    rotaryEncoder.setCount(0);
+  }
+
+  playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
 }
 
 //-----------------------------------------------------------------------
@@ -564,7 +564,17 @@ void loop()
   button4.loop();
   button5.loop();
   button6.loop();
-  ArduinoOTA.handle();  
+  ArduinoOTA.handle();
+
+  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1) {
+    int64_t val = rotaryEncoder.getCount();
+    if (val)
+    {
+      // Serial.printf("encoder: %ld\r\n", val);
+      rotaryEncoder.clearCount();
+      setVolume(volume + val);
+    }
+  }
 }
 
 // optional
@@ -572,8 +582,13 @@ void audio_info(const char *info)
 {
   Serial.print("info        ");
   Serial.println(info);
-  
-  // asyncWebSocket.textAll("AINF\t" + String(info));
+
+  String infoStr(info);
+  infoStr.toLowerCase();
+  if (infoStr.startsWith("streamurl="))
+  {
+    asyncWebSocket.textAll("AINF\t" + String(info));
+  }
 }
 void audio_id3data(const char *info)
 { // id3 metadata
@@ -586,7 +601,7 @@ void audio_eof_mp3(const char *info)
 { // end of file
   Serial.print("eof_mp3     ");
   Serial.println(info);
-  
+
   asyncWebSocket.textAll("AEM3\t" + String(info));
 }
 void audio_showstation(const char *info)
