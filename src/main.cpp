@@ -31,7 +31,8 @@ char hostname[32 + 1];
 char lastPlayedUrl[2048];
 
 const char index_html[] PROGMEM = R"rawliteral(
-<html>
+<!DOCTYPE html>
+<html lang="en">
 
 <head>
     <style>
@@ -87,14 +88,23 @@ const char index_html[] PROGMEM = R"rawliteral(
             box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(255, 0, 255, 0.80);
         }
 
+        .singleStationContainer {
+        }
+
         .station {
             background-color: #cccccc;
             text-decoration: none;
             margin: 5px;
+            display: inline-block;
         }
 
-        .station:hover {
+        .station:hover, .playStationButton:hover {
             background-color: rgb(86, 84, 204);
+        }
+
+        .playStationButton {
+            background-color: #FFcccc;
+            display: inline-block;
         }
 
         .volume-bar {
@@ -126,7 +136,9 @@ const char index_html[] PROGMEM = R"rawliteral(
         switch (window.location.protocol) {
             case 'http:':
             case 'https:':
-                host = window.location.host
+                if (window.location.host.split(':')[0] != '127.0.0.1') {
+                    host = window.location.host
+                }
                 break;
             default:
         }
@@ -137,11 +149,11 @@ const char index_html[] PROGMEM = R"rawliteral(
         // websocket.onclose   = onClose;
         // websocket.onmessage = onMessage; 
 
-        websocket.addEventListener("message", (event) => {
-            // console.log(event.data)
-            if (event.data.toString().includes("\t")) {
-                var splitted = event.data.toString().split("\t")
-                var payload = event.data.toString().substring(splitted[0].length + 1).trim()
+        function handleCommand(message) {
+            console.debug("handleCommand:", message)
+            if (message.includes("\t")) {
+                var splitted = message.split("\t")
+                var payload = message.substring(splitted[0].length + 1).trim()
                 // console.debug(splitted, splitted[0].length)
                 // console.debug("+" + payload + "+")
                 switch (splitted[0]) {
@@ -151,8 +163,6 @@ const char index_html[] PROGMEM = R"rawliteral(
                         document.getElementById('streamInfo').innerHTML = '&#x2047;'
                         break
                     case 'V':
-                        // document.getElementById('volume-bar-label').textContent = splitted[1]
-                        // console.log(document.getElementById('volume-bar-label'))
                         document.getElementById('volume-bar-label').textContent = payload
                         document.getElementById('volume-bar-fill').style.width = payload + '%'
                         break
@@ -163,13 +173,20 @@ const char index_html[] PROGMEM = R"rawliteral(
                         break
                     case 'ASTT':
                         if (payload.length > 0) {
-                          document.getElementById('streamInfo').textContent = payload
+                            document.getElementById('streamInfo').textContent = payload
                         }
                         break
-                    default: 
+                    default:
                         // console.debug("unhandled websocket:", event.data)
                         break
                 }
+            }
+        }
+
+        websocket.addEventListener("message", (event) => {
+            // console.log(event.data)
+            if (event.data.toString().includes("\t")) {
+                handleCommand(event.data.toString())
             }
         });
         var xhr = new XMLHttpRequest();
@@ -177,18 +194,26 @@ const char index_html[] PROGMEM = R"rawliteral(
             var stations = this.responseText.trim().split("\n");
             stations.forEach((station) => {
                 var stationsDiv = document.getElementById('stations');
+                var singleStationContainer = document.createElement('div');
+                singleStationContainer.className = 'singleStationContainer'
                 var ldiv = document.createElement('div');
-                // ldiv.style.border = '1px dashed grey';
-                ldiv.className = 'station';
+                ldiv.className = 'station'
                 ldiv.innerHTML = station;
-                ldiv.ondblclick = function () {
+                var playdiv = document.createElement('div');
+                playdiv.innerHTML = '&#x25B6;';
+                playdiv.className = 'playStationButton';                
+                playdiv.onclick = function () {
                     var xhr = new XMLHttpRequest();
                     xhr.timeout = 2000;
-                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + this.innerHTML, true);
+                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + ldiv.innerHTML, true);
                     xhr.send();
-
                 };
-                stationsDiv.appendChild(ldiv);
+                
+                singleStationContainer.appendChild(playdiv);
+                singleStationContainer.appendChild(ldiv);
+
+                
+                stationsDiv.appendChild(singleStationContainer);
             });
         });
 
@@ -204,7 +229,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div id="volume-bar" class="volume-bar">
         <div id="volume-bar-label" class="centered">&nbsp;</div>
         <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
-    </div>    
+    </div>
     <br />
     <div id="buttons" class="buttonscontainer">
         <a class="button" href="playpause" target="dummy">&#x23ef;</a>
@@ -218,7 +243,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         <input type="text" name="playurl"></input>
         <input type="submit" value="play url">
     </form>
-    <br />    
+    <br />
 
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
 </body>
@@ -228,10 +253,10 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 const char stations[] PROGMEM = R"rawliteral(
 http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
-https://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
-https://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
-https://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
-https://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
+http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
+http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
+http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
+http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
 )rawliteral";
 
 #include "Button2.h"
