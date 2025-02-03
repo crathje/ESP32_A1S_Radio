@@ -20,15 +20,26 @@
 #include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>   // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
-#include <ESP32Encoder.h> // https://github.com/madhephaestus/ESP32Encoder
+#include <ESP32Encoder.h>        // https://github.com/madhephaestus/ESP32Encoder
+#include <ElegantOTA.h>
+
+#include <Wire.h>
+TwoWire I2C_2 = TwoWire(1);
+#define SSD1306_ADDRESS 0x3C
+
+#include <Adafruit_SSD1306.h>
+// #include <U8g2lib.h>
 
 #include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
 AsyncWebServer asyncWebServer(80);
 AsyncWebSocket asyncWebSocket("/ws");
 DNSServer dnsServer;
 char hostname[32 + 1];
+const char compile_date[] = __DATE__ " " __TIME__;
 
 char lastPlayedUrl[2048];
+char lastPlayedStreamTitle[2048];
+char lastPlayedStation[2048];
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -260,7 +271,7 @@ http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
 )rawliteral";
 
 #include "Button2.h"
-Button2 button3, button4, button5, button6;
+Button2 button3, button4;
 
 // SPI GPIOs
 #define SD_CS 13
@@ -293,9 +304,13 @@ Button2 button3, button4, button5, button6;
 // buttons
 // #define BUTTON_2_PIN 13             // shared with SPI_CS
 #define BUTTON_3_PIN 19
-#define BUTTON_4_PIN 23
-#define BUTTON_5_PIN 18 // Stop
-#define BUTTON_6_PIN 5  // Play
+// #define BUTTON_4_PIN 23
+// #define BUTTON_5_PIN 18 // Stop
+// #define BUTTON_6_PIN 5  // Play
+
+#define IIC_EXTERNAL_CLK 5
+#define IIC_EXTERNAL_DATA 18
+#define IIC_EXTERNAL_DATA_FREQ 400000
 
 // amplifier enable
 #define GPIO_PA_EN 21
@@ -319,7 +334,45 @@ int volume = 70; // 0...100
 
 Audio audio;
 
+// #ifdef U8X8_HAVE_HW_SPI
+// #include <SPI.h>
+// #endif
+// #ifdef U8X8_HAVE_HW_I2C
+// #include <Wire.h>
+// #endif/
+// U8G2_SSD1306_128X32_UNIVISION_1_2ND_HW_I2C u8g2(U8G2_R0 /* rotation */, /* reset=*/U8X8_PIN_NONE, IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
+// U8G2_SH1106_128X64_NONAME_F_2ND_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 4, 5);
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2C_2, -1);
+volatile boolean foundDisplay = false;
+
 // #####################################################################
+
+void drawDisplay()
+{
+  if (foundDisplay)
+  {
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    String lastPlayedStationS = String(lastPlayedStation);
+    display.println(lastPlayedStationS.substring(0, 20).c_str());
+    display.println(lastPlayedStreamTitle);
+
+    int mapped = map(volume, 0, 100, 0, SCREEN_WIDTH);
+    for (int y = SCREEN_HEIGHT - 3; y < SCREEN_HEIGHT; y++)
+    {
+      display.drawLine(0, y, mapped, y, WHITE);
+    }
+
+    display.display();
+  }
+}
+
 void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
                       void *arg, uint8_t *data, size_t len)
 {
@@ -328,6 +381,8 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
   case WS_EVT_CONNECT:
     // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
     client->text("C\t" + String(lastPlayedUrl));
+    client->text("ASTT\t" + String(lastPlayedStreamTitle));
+    client->text("ASTA\t" + String(lastPlayedStation));
     client->text("V\t" + String(volume));
     break;
   case WS_EVT_DISCONNECT:
@@ -370,29 +425,57 @@ void setVolume(int value)
 #endif
 
   asyncWebSocket.textAll("V\t" + String(volume));
+  drawDisplay();
 }
 
 void actionPlayPause() { audio.pauseResume(); }
 void actionVolumeUp() { setVolume(volume + 1); }
 void actionVolumeDown() { setVolume(volume - 1); }
 
+void actionUpdateStarting()
+{
+  digitalWrite(GPIO_PA_EN, LOW);
+// mute!
+#ifdef DAC2USE_ES8388
+  dac.mute(ES8388::ES_OUT1, true);
+  dac.mute(ES8388::ES_OUT2, true);
+  dac.mute(ES8388::ES_MAIN, true);
+#endif
+  audio.stopSong();
+
+  if (foundDisplay)
+  {
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    display.println("Updating...");
+    display.display();
+  }
+}
+
 void buttonClick(Button2 &btn)
 {
   if (btn == button4)
   {
   }
-  else if (btn == button5)
-  {
-    actionPlayPause();
-  }
-  else if (btn == button6)
-  {
-    actionVolumeUp();
-  }
+  // else if (btn == button5)
+  // {
+  //   actionPlayPause();
+  // }
+  // else if (btn == button6)
+  // {
+  //   actionVolumeUp();
+  // }
 }
 
 void playUrl(const char *url)
 {
+  audio_showstreamtitle("");
+
+  String surl = String(url);
+  sprintf(lastPlayedStation, "%s", surl.substring(surl.lastIndexOf("/") + 1).c_str());
+  audio_showstation(lastPlayedStation);
   strcpy(lastPlayedUrl, url);
   asyncWebSocket.textAll("C\t" + String(url));
   audio.connecttohost(url);
@@ -428,18 +511,18 @@ void setup()
                   ESP_ARDUINO_VERSION_PATCH);
 
   // pinMode(BUTTON_3_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_4_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_5_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_6_PIN, INPUT_PULLUP);
+  // pinMode(BUTTON_4_PIN, INPUT_PULLUP);
+  // pinMode(BUTTON_5_PIN, INPUT_PULLUP);
+  // pinMode(BUTTON_6_PIN, INPUT_PULLUP);
 
   // button3.begin(BUTTON_3_PIN);
   // button3.setClickHandler(buttonClick);
-  button4.begin(BUTTON_4_PIN);
-  button4.setClickHandler(buttonClick);
-  button5.begin(BUTTON_5_PIN);
-  button5.setClickHandler(buttonClick);
-  button6.begin(BUTTON_6_PIN);
-  button6.setClickHandler(buttonClick);
+  // button4.begin(BUTTON_4_PIN);
+  // button4.setClickHandler(buttonClick);
+  // button5.begin(BUTTON_5_PIN);
+  // button5.setClickHandler(buttonClick);
+  // button6.begin(BUTTON_6_PIN);
+  // button6.setClickHandler(buttonClick);
 
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
@@ -495,6 +578,18 @@ void setup()
                     {
     request->send(200, "text/plain", "OK");
     actionVolumeDown(); });
+
+  asyncWebServer.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request)
+                    { request->send(200, "application/json", String()                                                                   //
+                                                                 + F("{")                                                               //
+                                                                 + F("\n  \"lastPlayedUrl\": \"") + String(lastPlayedUrl) + F("\"")     //
+                                                                 + F("\n, \"rssi\": \"") + String(WiFi.RSSI()) + F("\"")                //
+                                                                 + F("\n, \"hostname\": \"") + String(WiFi.getHostname()) + F("\"")     //
+                                                                 + F("\n, \"SSID\": \"") + String(WiFi.SSID()) + F("\"")                //
+                                                                 + F("\n, \"compile_date\": \"") + String(compile_date) + F("\"")       //
+                                                                 + F("\n, \"sdk_version\": \"") + String(ESP.getSdkVersion()) + F("\"") //
+                                                                 + F("\n, \"PIO_ENV\": \"") + String(PIO_ENV) + F("\"") + F("\n}")); });
+
   asyncWebSocket.onEvent(onWebSocketEvent);
   asyncWebServer.addHandler(&asyncWebSocket);
 
@@ -507,17 +602,13 @@ void setup()
   Serial.print(" Hostname: ");
   Serial.println(WiFi.getHostname());
 
+  ElegantOTA.begin(&asyncWebServer); // Start ElegantOTA
+  ElegantOTA.onStart(actionUpdateStarting);
+
   ArduinoOTA
       .onStart([]()
                {
-        digitalWrite(GPIO_PA_EN, LOW);
-// mute!
-#ifdef DAC2USE_ES8388
-        dac.mute(ES8388::ES_OUT1, true);
-        dac.mute(ES8388::ES_OUT2, true);
-        dac.mute(ES8388::ES_MAIN, true);
-#endif
-        audio.stopSong();
+        actionUpdateStarting();
 
         String type;
         if (ArduinoOTA.getCommand() == U_FLASH)
@@ -552,8 +643,66 @@ void setup()
     Serial.printf("Failed!\n");
     delay(1000);
   }
-  Serial.printf("OK\n");
+  Serial.printf("OK\r\n");
 
+  Serial.printf("Starting 2nd I2C on data: %d clk: %d...", IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
+  I2C_2.begin(IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK, IIC_EXTERNAL_DATA_FREQ);
+  Serial.printf("OK\r\n");
+
+  Serial.println();
+  Serial.println("I2C scanner. Scanning ...");
+  byte count = 0;
+
+#define MIN_I2C_DEVICE_ADDR 8
+#define MAX_I2C_DEVICE_ADDR 120
+  for (byte i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
+  {
+    I2C_2.beginTransmission(i);
+    if (I2C_2.endTransmission() == 0)
+    {
+      Serial.printf("Found 0x%02x\r\n", i);
+      if (i == SSD1306_ADDRESS)
+      {
+        foundDisplay = true;
+      }
+    }
+    else
+    {
+      // Serial.printf("Absent 0x%02x", i);
+    }
+  }
+  Serial.printf("DONE\r\n");
+
+  if (foundDisplay)
+  {
+    Serial.printf("SSD1306 display init (0x%02x)...", SSD1306_ADDRESS);
+    // fonts see https://github.com/olikraus/u8g2/wiki/fntlist8
+    // if (u8g2.begin())
+    // {
+    //   Serial.println(F("OK"));
+    //   u8g2.setPowerSave(0);
+    //   u8g2.clearBuffer();
+    //   u8g2.setFont(u8g2_font_ncenB08_tr);
+    //   u8g2.drawStr(0, 10, "Booting...");
+    //   u8g2.setFont(u8g2_font_squeezed_r7_tr);
+    //   u8g2.drawStr(0, 20, compile_date);
+    //   u8g2.sendBuffer();
+    //   u8g2.setFont(u8g2_font_ncenB08_tr);
+    // }
+    // else
+    // {
+    //   Serial.println(F("FAILED"));
+    // }
+    display.begin(SSD1306_SWITCHCAPVCC, SSD1306_ADDRESS);
+    display.clearDisplay();
+    display.display();
+
+    display.setTextColor(WHITE);
+    display.setTextSize(1);
+    display.setCursor(10, 0);
+    display.println("Booting...");
+    display.display();
+  }
   setVolume(volume);
 
   //  ac.DumpRegisters();
@@ -572,10 +721,14 @@ void setup()
   // audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
   // audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
 
-  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1) {
+  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1)
+  {
     rotaryEncoder.attachHalfQuad(ROTARY_ENCODER_B_DT_PIN, ROTARY_ENCODER_A_CLK_PIN);
     rotaryEncoder.setCount(0);
   }
+
+  memset(lastPlayedUrl, sizeof(lastPlayedUrl), 0);
+  memset(lastPlayedStreamTitle, sizeof(lastPlayedStreamTitle), 0);
 
   playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
 }
@@ -585,13 +738,15 @@ void setup()
 void loop()
 {
   audio.loop();
-  button3.loop();
-  button4.loop();
-  button5.loop();
-  button6.loop();
+  // button3.loop();
+  // button4.loop();
+  // button5.loop();
+  // button6.loop();
   ArduinoOTA.handle();
+  ElegantOTA.loop();
 
-  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1) {
+  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1)
+  {
     int64_t val = rotaryEncoder.getCount();
     if (val)
     {
@@ -633,15 +788,19 @@ void audio_showstation(const char *info)
 {
   Serial.print("station     ");
   Serial.println(info);
+  strncpy(lastPlayedStation, info, sizeof(lastPlayedStation));
+  asyncWebSocket.textAll("ASTA\t" + String(lastPlayedStation));
 
-  asyncWebSocket.textAll("ASTA\t" + String(info));
+  drawDisplay();
 }
 void audio_showstreamtitle(const char *info)
 {
   Serial.print("streamtitle ");
   Serial.println(info);
+  strncpy(lastPlayedStreamTitle, info, sizeof(lastPlayedStreamTitle));
+  asyncWebSocket.textAll("ASTT\t" + String(lastPlayedStreamTitle));
 
-  asyncWebSocket.textAll("ASTT\t" + String(info));
+  drawDisplay();
 }
 void audio_bitrate(const char *info)
 {
