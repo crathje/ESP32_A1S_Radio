@@ -22,6 +22,8 @@
 #include <ESPAsyncWiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ESP32Encoder.h>        // https://github.com/madhephaestus/ESP32Encoder
 #include <ElegantOTA.h>
+#include <ArduinoJson.h>
+#include "SPIFFS.h"
 
 #include <Wire.h>
 TwoWire I2C_2 = TwoWire(1);
@@ -40,6 +42,12 @@ const char compile_date[] = __DATE__ " " __TIME__;
 char lastPlayedUrl[2048];
 char lastPlayedStreamTitle[2048];
 char lastPlayedStation[2048];
+
+JsonDocument configJSON;
+const char *CONFIGFILENAME = "/radioconf.json";
+#define _MAX_JSONBUFFERSIZE 2048
+
+volatile int currentStationNum = 0;
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -99,8 +107,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(255, 0, 255, 0.80);
         }
 
-        .singleStationContainer {
-        }
+        .singleStationContainer {}
 
         .station {
             background-color: #cccccc;
@@ -109,7 +116,8 @@ const char index_html[] PROGMEM = R"rawliteral(
             display: inline-block;
         }
 
-        .station:hover, .playStationButton:hover {
+        .station:hover,
+        playStationButton:hover {
             background-color: rgb(86, 84, 204);
         }
 
@@ -202,33 +210,32 @@ const char index_html[] PROGMEM = R"rawliteral(
         });
         var xhr = new XMLHttpRequest();
         xhr.addEventListener("load", function () {
-            var stations = this.responseText.trim().split("\n");
-            stations.forEach((station) => {
+            var configJSon = JSON.parse(this.responseText)
+            //var stations = this.responseText.trim().split("\n");
+            // console.log(configJSon)
+            configJSon.stations.forEach((station) => {
                 var stationsDiv = document.getElementById('stations');
                 var singleStationContainer = document.createElement('div');
                 singleStationContainer.className = 'singleStationContainer'
                 var ldiv = document.createElement('div');
                 ldiv.className = 'station'
-                ldiv.innerHTML = station;
+                ldiv.innerHTML = station.name + ' (' + station.url + ')';
                 var playdiv = document.createElement('div');
                 playdiv.innerHTML = '&#x25B6;';
-                playdiv.className = 'playStationButton';                
+                playdiv.className = 'playStationButton';
                 playdiv.onclick = function () {
                     var xhr = new XMLHttpRequest();
                     xhr.timeout = 2000;
-                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + ldiv.innerHTML, true);
+                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + station.url, true);
                     xhr.send();
                 };
-                
                 singleStationContainer.appendChild(playdiv);
                 singleStationContainer.appendChild(ldiv);
-
-                
                 stationsDiv.appendChild(singleStationContainer);
             });
         });
 
-        xhr.open("GET", "http://" + host + "/stations");
+        xhr.open("GET", "http://" + host + "/config.json");
         xhr.send();
     </script>
 </head>
@@ -255,6 +262,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <input type="submit" value="play url">
     </form>
     <br />
+    <br />
+    <a href="/config">config</a><br />
 
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
 </body>
@@ -262,12 +271,31 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-const char stations[] PROGMEM = R"rawliteral(
-http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true
-http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u
-http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u
-http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u
-http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u
+const char _DEFAULT_CONFIG[] PROGMEM = R"rawliteral(
+{
+    "stations": [
+        {
+            "name": "Radio Rock Norge",
+            "url": "http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true"
+        },
+        {
+            "name": "Bob SH",
+            "url": "http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u"
+        },
+        {
+            "name": "Delta Foehnfrisur",
+            "url": "http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u"
+        },
+        {
+            "name": "Bob Metal",
+            "url": "http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u"
+        },
+        {
+            "name": "NDR2",
+            "url": "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u"
+        }
+    ]
+}
 )rawliteral";
 
 #include "Button2.h"
@@ -317,7 +345,7 @@ Button2 button3, button4;
 
 #define ROTARY_ENCODER_A_CLK_PIN 22
 #define ROTARY_ENCODER_B_DT_PIN 19
-#define ROTARY_ENCODER_BUTTON_PIN -1
+#define ROTARY_ENCODER_BUTTON_PIN 23
 #define ROTARY_ENCODER_STEPS 2
 ESP32Encoder rotaryEncoder;
 
@@ -351,6 +379,70 @@ volatile boolean foundDisplay = false;
 
 // #####################################################################
 
+void loadSaveConfig(boolean save = false)
+{
+  static const char *TAG = "loadSaveConfig";
+  File file;
+  size_t len = 0;
+
+  bool spiffsWorking = false, configLoaded = false;
+  if (!SPIFFS.begin(true))
+  {
+    Serial.println("An Error has occurred while mounting SPIFFS - trying to format.");
+    SPIFFS.format();
+    if (!SPIFFS.begin(true))
+    {
+      Serial.println("..still failing to mount SPIFFS");
+    }
+    else
+    {
+      spiffsWorking = true;
+    }
+  }
+  else
+  {
+    spiffsWorking = true;
+  }
+  Serial.printf("SPIFFS: %d/%d\n", SPIFFS.usedBytes(), SPIFFS.totalBytes());
+  DeserializationError derr;
+  if (spiffsWorking)
+  {
+    file = SPIFFS.open(CONFIGFILENAME, FILE_READ);
+    if (!file)
+    {
+      ESP_LOGI(TAG, "No saved config found.");
+    }
+    else
+    {
+      ESP_LOGI(TAG, "Found config (%d) in %s", file.size(), CONFIGFILENAME);
+
+      unsigned char content[file.size()];
+      len = file.readBytes((char *)content, file.size());
+      file.close();
+      ESP_LOGI(TAG, "Read %d bytes from file", len);
+      ESP_LOG_BUFFER_HEXDUMP(TAG, content, len, ESP_LOG_DEBUG);
+      if (len > 0)
+      {
+        derr = deserializeJson(configJSON, content);
+        if (derr == DeserializationError::Ok)
+        {
+          configLoaded = true;
+        }
+      }
+    }
+    SPIFFS.end();
+  }
+  if (!configLoaded)
+  {
+    derr = deserializeJson(configJSON, _DEFAULT_CONFIG);
+    if (derr == DeserializationError::Ok)
+    {
+      configLoaded = true;
+    }
+  }
+  Serial.printf("configLoaded: %d size: %d stations: %d\r\n", configLoaded, configJSON.size(), configJSON["stations"].size());
+}
+
 void drawDisplay()
 {
   if (foundDisplay)
@@ -360,7 +452,10 @@ void drawDisplay()
     display.setTextSize(1);
     display.setCursor(0, 0);
     String lastPlayedStationS = String(lastPlayedStation);
-    display.println(lastPlayedStationS.substring(0, 20).c_str());
+    char buff[100];
+    sprintf(buff, "%s%s", currentStationNum < 0 ? "" : "" + String(currentStationNum) + ": ", //
+            lastPlayedStationS.substring(0, 20).c_str());
+    display.println(buff);
     display.println(lastPlayedStreamTitle);
 
     int mapped = map(volume, 0, 100, 0, SCREEN_WIDTH);
@@ -472,13 +567,49 @@ void buttonClick(Button2 &btn)
 void playUrl(const char *url)
 {
   audio_showstreamtitle("");
+  lastPlayedStation[0] = 0;
+
+  JsonArray array = configJSON["stations"].as<JsonArray>();
+  int i = 0;
+  currentStationNum = -1;
+  for (JsonVariant v : array)
+  {
+    if (!strncmp(url, v["url"].as<string>().c_str(), strlen(url)))
+    {
+      // Serial.print("FOUND::: ");
+      currentStationNum = i;
+      sprintf(lastPlayedStation, "%s", v["name"].as<string>().c_str());
+    }
+    // Serial.println(v.as<string>().c_str());
+    i++;
+  }
 
   String surl = String(url);
-  sprintf(lastPlayedStation, "%s", surl.substring(surl.lastIndexOf("/") + 1).c_str());
+  if (strlen(lastPlayedStation) == 0)
+  {
+    sprintf(lastPlayedStation, "%s", surl.substring(surl.lastIndexOf("/") + 1).c_str());
+  }
   audio_showstation(lastPlayedStation);
   strcpy(lastPlayedUrl, url);
   asyncWebSocket.textAll("C\t" + String(url));
   audio.connecttohost(url);
+}
+
+void changeSationIndex(int newIndex)
+{
+  JsonArray array = configJSON["stations"].as<JsonArray>();
+  int i = 0;
+  for (JsonVariant v : array)
+  {
+    if (i == newIndex)
+    {
+      currentStationNum = newIndex;
+      playUrl(v["url"].as<string>().c_str());
+      return;
+    }
+    i++;
+  }
+  // not found, not changing anything
 }
 
 void setup()
@@ -524,6 +655,8 @@ void setup()
   // button6.begin(BUTTON_6_PIN);
   // button6.setClickHandler(buttonClick);
 
+  loadSaveConfig();
+
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
@@ -555,8 +688,48 @@ void setup()
 
   asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
                     { request->send_P(200, "text/html", index_html); });
-  asyncWebServer.on("/stations", HTTP_GET, [](AsyncWebServerRequest *request)
-                    { request->send_P(200, "text/plain", stations); });
+  asyncWebServer.on("/config.json", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+    AsyncResponseStream *response = request->beginResponseStream("application/json");
+    // JsonObject root = configJSON.to<JsonObject>();
+    serializeJsonPretty(configJSON, *response);
+    request->send(response); });
+  asyncWebServer.on("/config.json", HTTP_POST, [](AsyncWebServerRequest *request)
+                    {
+                int params = request->params();
+                for (int i = 0; i < params; i++) {
+                  const AsyncWebParameter* p = request->getParam(i);
+                  Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+                  if (p->name() == "config") {
+                    // if (validateJson(p->value())) {
+                      DeserializationError dret = deserializeJson(configJSON, p->value());
+                      if (dret == DeserializationError::Ok) {
+                        if (SPIFFS.begin(true)) {                            
+                          File file = SPIFFS.open(CONFIGFILENAME, "w", true);
+                          if (file)
+                          {
+                            serializeJson(configJSON, file);
+                            file.close();
+                            Serial.println("Config has been saved");
+                          }
+                          request->redirect("/config");
+                          SPIFFS.end();
+                          return;
+                        } else {
+                          request->send_P(500, "text/html", "Could not mount SPIFFS");
+                          return;
+                        }
+                      }
+                    // } 
+                  }
+                }
+                request->send_P(500, "text/html", "Failed"); });
+  asyncWebServer.on("/config", HTTP_GET, [](AsyncWebServerRequest *request)
+                    { 
+                char json[_MAX_JSONBUFFERSIZE];
+                serializeJsonPretty(configJSON, json);
+                request->send(200, "text/html", String() + "<html><body><form action=\"/config.json\" method=\"POST\"><textarea name=\"config\" cols=\"100\" rows=\"35\">" + json + "</textarea><br /><button>Save</button></form></body></html>"); });
+
   asyncWebServer.on("/playpause", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
     request->send(200, "text/plain", "OK");
@@ -645,33 +818,36 @@ void setup()
   }
   Serial.printf("OK\r\n");
 
-  Serial.printf("Starting 2nd I2C on data: %d clk: %d...", IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
-  I2C_2.begin(IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK, IIC_EXTERNAL_DATA_FREQ);
-  Serial.printf("OK\r\n");
+  if (IIC_EXTERNAL_DATA != GPIO_NUM_NC && IIC_EXTERNAL_CLK != GPIO_NUM_NC)
+  {
+    Serial.printf("Starting 2nd I2C on data: %d clk: %d...", IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
+    I2C_2.begin(IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK, IIC_EXTERNAL_DATA_FREQ);
+    Serial.printf("OK\r\n");
 
-  Serial.println();
-  Serial.println("I2C scanner. Scanning ...");
-  byte count = 0;
+    Serial.println();
+    Serial.println("I2C scanner. Scanning ...");
+    byte count = 0;
 
 #define MIN_I2C_DEVICE_ADDR 8
 #define MAX_I2C_DEVICE_ADDR 120
-  for (byte i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
-  {
-    I2C_2.beginTransmission(i);
-    if (I2C_2.endTransmission() == 0)
+    for (byte i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
     {
-      Serial.printf("Found 0x%02x\r\n", i);
-      if (i == SSD1306_ADDRESS)
+      I2C_2.beginTransmission(i);
+      if (I2C_2.endTransmission() == 0)
       {
-        foundDisplay = true;
+        Serial.printf("Found 0x%02x\r\n", i);
+        if (i == SSD1306_ADDRESS)
+        {
+          foundDisplay = true;
+        }
+      }
+      else
+      {
+        // Serial.printf("Absent 0x%02x", i);
       }
     }
-    else
-    {
-      // Serial.printf("Absent 0x%02x", i);
-    }
+    Serial.printf("DONE\r\n");
   }
-  Serial.printf("DONE\r\n");
 
   if (foundDisplay)
   {
@@ -721,10 +897,15 @@ void setup()
   // audio.connecttohost("http://dg-rbb-http-dus-dtag-cdn.cast.addradio.de/rbb/antennebrandenburg/live/mp3/128/stream.mp3");
   // audio.connecttospeech("Wenn die Hunde schlafen, kann der Wolf gut Schafe stehlen.", "de");
 
-  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1)
+  if (ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC && ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC)
   {
     rotaryEncoder.attachHalfQuad(ROTARY_ENCODER_B_DT_PIN, ROTARY_ENCODER_A_CLK_PIN);
     rotaryEncoder.setCount(0);
+  }
+
+  if (ROTARY_ENCODER_BUTTON_PIN != GPIO_NUM_NC)
+  {
+    pinMode(ROTARY_ENCODER_BUTTON_PIN, INPUT_PULLUP);
   }
 
   memset(lastPlayedUrl, sizeof(lastPlayedUrl), 0);
@@ -745,14 +926,27 @@ void loop()
   ArduinoOTA.handle();
   ElegantOTA.loop();
 
-  if (ROTARY_ENCODER_A_CLK_PIN != -1 && ROTARY_ENCODER_A_CLK_PIN != -1)
+  if (ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC && ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC)
   {
     int64_t val = rotaryEncoder.getCount();
+    bool rotaryPressed = false;
+    if (ROTARY_ENCODER_BUTTON_PIN != GPIO_NUM_NC)
+    {
+      // pullup enabled, so level LOW is pressed
+      rotaryPressed = digitalRead(ROTARY_ENCODER_BUTTON_PIN) == LOW;
+    }
     if (val)
     {
-      // Serial.printf("encoder: %ld\r\n", val);
+      // Serial.printf("encoder: %s %ld\r\n", rotaryPressed ? "T" : "F", val);
       rotaryEncoder.clearCount();
-      setVolume(volume + val);
+      if (rotaryPressed)
+      {
+        changeSationIndex(currentStationNum + val);
+      }
+      else
+      {
+        setVolume(volume + val);
+      }
     }
   }
 }
