@@ -269,30 +269,31 @@ const char index_html[] PROGMEM = R"rawliteral(
     )rawliteral";
     
     const char _DEFAULT_CONFIG[] PROGMEM = R"rawliteral(
+{
+  "volume": 70,
+  "stations": [
     {
-        "stations": [
-            {
-                "name": "Radio Rock Norge",
-                "url": "http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true"
-            },
-            {
-                "name": "Bob SH",
-                "url": "http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u"
-            },
-            {
-                "name": "Delta Foehnfrisur",
-                "url": "http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u"
-            },
-            {
-                "name": "Bob Metal",
-                "url": "http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u"
-            },
-            {
-                "name": "NDR2",
-                "url": "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u"
-            }
-        ]
+      "name": "Radio Rock Norge",
+      "url": "http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true"
+    },
+    {
+      "name": "Bob SH",
+      "url": "http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u"
+    },
+    {
+      "name": "Delta Foehnfrisur",
+      "url": "http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u"
+    },
+    {
+      "name": "Bob Metal",
+      "url": "http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u"
+    },
+    {
+      "name": "NDR2",
+      "url": "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u"
     }
+  ]
+}
     )rawliteral";
     
 #endif

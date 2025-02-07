@@ -25,7 +25,9 @@
 #include <ESP32Encoder.h>        // https://github.com/madhephaestus/ESP32Encoder
 #include <ElegantOTA.h>
 #include <ArduinoJson.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
+#include <HTTPClient.h>
+// #include <SPIFFS.h>
 #include "main.h"
 
 #include <Wire.h>
@@ -50,10 +52,10 @@ JsonDocument configJSON;
 const char *CONFIGFILENAME = "/radioconf.json";
 #define _MAX_JSONBUFFERSIZE 2048
 
-volatile int currentStationNum = 0;
+volatile int currentStationNum = -1;
 
-#include <Button2.h>
-Button2 button3, button4;
+// #include <Button2.h>
+// Button2 button3, button4;
 
 // SPI GPIOs
 #define SD_CS 13
@@ -133,35 +135,35 @@ volatile boolean foundDisplay = false;
 
 // #####################################################################
 
-void loadSaveConfig(boolean save = false)
+void loadConfigFromFlash()
 {
-  static const char *TAG = "loadSaveConfig";
+  static const char *TAG = "loadConfigFromFlash";
   File file;
   size_t len = 0;
 
-  bool spiffsWorking = false, configLoaded = false;
-  if (!SPIFFS.begin(true))
+  bool configFSWorking = false, configLoaded = false;
+  if (!LittleFS.begin(true))
   {
     Serial.println("An Error has occurred while mounting SPIFFS - trying to format.");
-    SPIFFS.format();
-    if (!SPIFFS.begin(true))
+    LittleFS.format();
+    if (!LittleFS.begin(true))
     {
       Serial.println("..still failing to mount SPIFFS");
     }
     else
     {
-      spiffsWorking = true;
+      configFSWorking = true;
     }
   }
   else
   {
-    spiffsWorking = true;
+    configFSWorking = true;
   }
-  Serial.printf("SPIFFS: %d/%d\n", SPIFFS.usedBytes(), SPIFFS.totalBytes());
+  Serial.printf("LittleFS: %d/%d\n", LittleFS.usedBytes(), LittleFS.totalBytes());
   DeserializationError derr;
-  if (spiffsWorking)
+  if (configFSWorking)
   {
-    file = SPIFFS.open(CONFIGFILENAME, FILE_READ);
+    file = LittleFS.open(CONFIGFILENAME, FILE_READ);
     if (!file)
     {
       ESP_LOGI(TAG, "No saved config found.");
@@ -184,7 +186,7 @@ void loadSaveConfig(boolean save = false)
         }
       }
     }
-    SPIFFS.end();
+    LittleFS.end();
   }
   if (!configLoaded)
   {
@@ -216,6 +218,7 @@ void drawDisplay()
     for (int y = SCREEN_HEIGHT - 3; y < SCREEN_HEIGHT; y++)
     {
       display.drawLine(0, y, mapped, y, WHITE);
+      display.drawLine(mapped + 1, y, SCREEN_WIDTH - 1, y, BLACK);
     }
 
     display.display();
@@ -298,25 +301,25 @@ void actionUpdateStarting()
     display.setTextColor(WHITE);
     display.setTextSize(2);
     display.setCursor(0, 0);
-    display.println("Updating...");
+    display.println("Updating");
     display.display();
   }
 }
 
-void buttonClick(Button2 &btn)
-{
-  if (btn == button4)
-  {
-  }
-  // else if (btn == button5)
-  // {
-  //   actionPlayPause();
-  // }
-  // else if (btn == button6)
-  // {
-  //   actionVolumeUp();
-  // }
-}
+// void buttonClick(Button2 &btn)
+// {
+//   if (btn == button4)
+//   {
+//   }
+//   // else if (btn == button5)
+//   // {
+//   //   actionPlayPause();
+//   // }
+//   // else if (btn == button6)
+//   // {
+//   //   actionVolumeUp();
+//   // }
+// }
 
 void playUrl(const char *url)
 {
@@ -351,6 +354,10 @@ void playUrl(const char *url)
 
 void changeSationIndex(int newIndex)
 {
+  if (currentStationNum == newIndex)
+  {
+    return;
+  }
   JsonArray array = configJSON["stations"].as<JsonArray>();
   int i = 0;
   for (JsonVariant v : array)
@@ -409,7 +416,12 @@ void setup()
   // button6.begin(BUTTON_6_PIN);
   // button6.setClickHandler(buttonClick);
 
-  loadSaveConfig();
+  loadConfigFromFlash();
+
+  if (configJSON["volume"].is<int>())
+  {
+    volume = configJSON["volume"].as<int>();
+  }
 
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
@@ -458,8 +470,8 @@ void setup()
                     // if (validateJson(p->value())) {
                       DeserializationError dret = deserializeJson(configJSON, p->value());
                       if (dret == DeserializationError::Ok) {
-                        if (SPIFFS.begin(true)) {                            
-                          File file = SPIFFS.open(CONFIGFILENAME, "w", true);
+                        if (LittleFS.begin(true)) {                            
+                          File file = LittleFS.open(CONFIGFILENAME, "w", true);
                           if (file)
                           {
                             serializeJson(configJSON, file);
@@ -467,10 +479,10 @@ void setup()
                             Serial.println("Config has been saved");
                           }
                           request->redirect("/config");
-                          SPIFFS.end();
+                          LittleFS.end();
                           return;
                         } else {
-                          request->send_P(500, "text/html", "Could not mount SPIFFS");
+                          request->send_P(500, "text/html", "Could not mount LittleFS");
                           return;
                         }
                       }
@@ -510,6 +522,7 @@ void setup()
                     {
                       JsonDocument responseJson;
                       // responseJson["lastPlayedUrl"] = lastPlayedUrl;
+                      responseJson["lastPlayedStation"] = lastPlayedStation;
                       responseJson["rssi"] = WiFi.RSSI();
                       responseJson["hostname"] = WiFi.getHostname();
                       responseJson["SSID"] = WiFi.SSID();
@@ -572,6 +585,20 @@ void setup()
         else if (error == OTA_END_ERROR)
           Serial.println("End Failed"); });
 
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                        {
+                          Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+                          if (foundDisplay)
+                          {
+                            int mapped = map((progress / (total / 100)), 0, 100, 0, SCREEN_WIDTH);
+                            for (int y = SCREEN_HEIGHT - 3; y < SCREEN_HEIGHT; y++)
+                            {
+                              display.drawLine(0, y, mapped, y, WHITE);
+                              display.drawLine(mapped + 1, y, SCREEN_WIDTH - 1, y, BLACK);
+                            }
+                            display.display();
+                          }
+                        });
   ArduinoOTA.setHostname(wifiManager.getConfiguredSTASSID().c_str());
   //  ArduinoOTA.setPassword("secretPass");
   ArduinoOTA.begin();
@@ -592,11 +619,11 @@ void setup()
 
     Serial.println();
     Serial.println("I2C scanner. Scanning ...");
-    byte count = 0;
+    uint8_t count = 0;
 
 #define MIN_I2C_DEVICE_ADDR 8
 #define MAX_I2C_DEVICE_ADDR 120
-    for (byte i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
+    for (uint8_t i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
     {
       I2C_2.beginTransmission(i);
       if (I2C_2.endTransmission() == 0)
@@ -679,7 +706,7 @@ void setup()
 
   // playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
 
-    changeSationIndex(0);
+  changeSationIndex(0);
 }
 
 //-----------------------------------------------------------------------
@@ -730,6 +757,72 @@ void audio_info(const char *info)
   if (infoStr.startsWith("streamurl="))
   {
     asyncWebSocket.textAll("AINF\t" + String(info));
+
+    // experimental fetching of audio data like radio rock norge does not encapsulate the data into the stream
+    // audio_info("StreamUrl='https://listenapi.planetradio.co.uk/api9.2/eventdata/292929585'");
+    if (1 == 1)
+    {
+      String url = String(info + 11);
+      url = url.substring(0, url.length() - 1);
+      // Serial.print("Trying to get audio meta data from: ");
+      // Serial.println(url.c_str());
+
+      HTTPClient http;
+      // WiFiClient newClient;
+      if (http.begin(url))
+      {
+        int httpCode = http.GET();
+        if (httpCode > 0)
+        {
+          // HTTP header has been send and Server response header has been handled
+          // Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+
+          // file found at server
+          if (httpCode == HTTP_CODE_OK)
+          {
+            String payload = http.getString();
+            // Serial.println(payload);
+            JsonDocument doc;
+            DeserializationError derr = deserializeJson(doc, payload);
+            if (derr == DeserializationError::Ok)
+            {
+              if (doc["eventType"].is<String>() && doc["eventSongArtist"].is<String>() && doc["eventSongTitle"].is<String>())
+              {
+                if (doc["eventType"].as<String>() == "Song")
+                {
+                  // Serial.println(doc["eventType"].as<String>());
+                  // Serial.println(doc["eventSongArtist"].as<String>());
+                  // Serial.println(doc["eventSongTitle"].as<String>());
+                  sprintf(lastPlayedStreamTitle, "%s - %s", doc["eventSongArtist"].as<String>().c_str(), doc["eventSongTitle"].as<String>().c_str());
+                  // Serial.println(lastPlayedStreamTitle);
+                  audio_showstreamtitle(lastPlayedStreamTitle);
+                }
+                else
+                {
+                  Serial.printf("eventType is not Song...\r\n");
+                }
+              }
+              else
+              {
+                Serial.printf("eventType || eventSongArtist || eventSongTitle not set\r\n");
+              }
+            }
+            else
+            {
+              Serial.printf("DeserializationError: %d\r\n", derr);
+            }
+          }
+        }
+        else
+        {
+          Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+        }
+      }
+      else
+      {
+        Serial.printf("[HTTP] begin... failed\r\n");
+      }
+    }
   }
 }
 void audio_id3data(const char *info)
