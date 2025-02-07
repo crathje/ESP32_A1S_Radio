@@ -13,8 +13,10 @@
 
 #ifdef DAC2USE_AC101
 #include "AC101.h" // https://github.com/schreibfaul1/AC101
+#define DACNAME "AC101"
 #endif
 #ifdef DAC2USE_ES8388
+#define DACNAME "ES8388"
 #include "ES8388.h" // https://github.com/maditnerd/es8388
 #endif
 #include <ArduinoOTA.h>
@@ -23,7 +25,8 @@
 #include <ESP32Encoder.h>        // https://github.com/madhephaestus/ESP32Encoder
 #include <ElegantOTA.h>
 #include <ArduinoJson.h>
-#include "SPIFFS.h"
+#include <SPIFFS.h>
+#include "main.h"
 
 #include <Wire.h>
 TwoWire I2C_2 = TwoWire(1);
@@ -49,256 +52,7 @@ const char *CONFIGFILENAME = "/radioconf.json";
 
 volatile int currentStationNum = 0;
 
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-    <style>
-        a:link {
-            text-decoration: none;
-            font-size: 40px;
-        }
-
-        div {
-            margin: 2px;
-        }
-
-        .lcd {
-            font-family: 'LCD', sans-serif;
-            border: 0px;
-            padding: 5px;
-            color: mediumaquamarine;
-            background-color: black;
-            font-size: xx-large;
-        }
-
-        .smalllcd {
-            font-family: 'LCD', sans-serif;
-            border: 0px;
-            padding: 5px;
-            color: greenyellow;
-            background-color: black;
-            font-size: large;
-        }
-
-        .buttonscontainer {
-            text-align: center;
-        }
-
-        .button {
-            border: none;
-            background-color: #cccccc;
-            padding: 15px 32px;
-            margin: auto;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: xx-large;
-            border-radius: 10px;
-            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
-        }
-
-        .button:hover {
-            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 255, 0.80);
-        }
-
-        .button:active {
-            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(255, 0, 255, 0.80);
-        }
-
-        .singleStationContainer {}
-
-        .station {
-            background-color: #cccccc;
-            text-decoration: none;
-            margin: 5px;
-            display: inline-block;
-        }
-
-        .station:hover,
-        playStationButton:hover {
-            background-color: rgb(86, 84, 204);
-        }
-
-        .playStationButton {
-            background-color: #FFcccc;
-            display: inline-block;
-        }
-
-        .volume-bar {
-            position: relative;
-            width: 100%;
-            background-color: #666666;
-            color: white;
-            font-weight: bolder;
-        }
-
-        .volume-bar-fill {
-            background-color: green;
-        }
-
-        .centered {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-        }
-    </style>
-    <link href="https://fonts.cdnfonts.com/css/lcd" rel="stylesheet">
-    <script>
-        // develope is easier local
-        var host = 'A1S-Radio-448026455F34.home'
-        var websocket;
-
-
-        switch (window.location.protocol) {
-            case 'http:':
-            case 'https:':
-                if (window.location.host.split(':')[0] != '127.0.0.1') {
-                    host = window.location.host
-                }
-                break;
-            default:
-        }
-
-        ;
-        websocket = new WebSocket('ws://' + host + '/ws');
-        // websocket.onopen    = onOpen;
-        // websocket.onclose   = onClose;
-        // websocket.onmessage = onMessage; 
-
-        function handleCommand(message) {
-            console.debug("handleCommand:", message)
-            if (message.includes("\t")) {
-                var splitted = message.split("\t")
-                var payload = message.substring(splitted[0].length + 1).trim()
-                // console.debug(splitted, splitted[0].length)
-                // console.debug("+" + payload + "+")
-                switch (splitted[0]) {
-                    case 'C':
-                        document.getElementById('currentPlaying').innerHTML = payload
-                        document.getElementById('station').innerHTML = '&#x2047;'
-                        document.getElementById('streamInfo').innerHTML = '&#x2047;'
-                        break
-                    case 'V':
-                        document.getElementById('volume-bar-label').textContent = payload
-                        document.getElementById('volume-bar-fill').style.width = payload + '%'
-                        break
-                    case 'ASTA':
-                        if (payload.length > 0) {
-                            document.getElementById('station').textContent = payload
-                        }
-                        break
-                    case 'ASTT':
-                        if (payload.length > 0) {
-                            document.getElementById('streamInfo').textContent = payload
-                        }
-                        break
-                    default:
-                        // console.debug("unhandled websocket:", event.data)
-                        break
-                }
-            }
-        }
-
-        websocket.addEventListener("message", (event) => {
-            // console.log(event.data)
-            if (event.data.toString().includes("\t")) {
-                handleCommand(event.data.toString())
-            }
-        });
-        var xhr = new XMLHttpRequest();
-        xhr.addEventListener("load", function () {
-            var configJSon = JSON.parse(this.responseText)
-            //var stations = this.responseText.trim().split("\n");
-            // console.log(configJSon)
-            configJSon.stations.forEach((station) => {
-                var stationsDiv = document.getElementById('stations');
-                var singleStationContainer = document.createElement('div');
-                singleStationContainer.className = 'singleStationContainer'
-                var ldiv = document.createElement('div');
-                ldiv.className = 'station'
-                ldiv.innerHTML = station.name + ' (' + station.url + ')';
-                var playdiv = document.createElement('div');
-                playdiv.innerHTML = '&#x25B6;';
-                playdiv.className = 'playStationButton';
-                playdiv.onclick = function () {
-                    var xhr = new XMLHttpRequest();
-                    xhr.timeout = 2000;
-                    xhr.open("GET", "http://" + host + "/playurl?playurl=" + station.url, true);
-                    xhr.send();
-                };
-                singleStationContainer.appendChild(playdiv);
-                singleStationContainer.appendChild(ldiv);
-                stationsDiv.appendChild(singleStationContainer);
-            });
-        });
-
-        xhr.open("GET", "http://" + host + "/config.json");
-        xhr.send();
-    </script>
-</head>
-
-<body>
-    <div id="streamInfo" class="lcd"></div>
-    <div id="station" class="smalllcd"></div>
-    <div id="currentPlaying" class="smalllcd"></div>
-    <div id="volume-bar" class="volume-bar">
-        <div id="volume-bar-label" class="centered">&nbsp;</div>
-        <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
-    </div>
-    <br />
-    <div id="buttons" class="buttonscontainer">
-        <a class="button" href="playpause" target="dummy">&#x23ef;</a>
-        <a class="button" href="voldown" target="dummy">&#x1f509;</a>
-        <a class="button" href="volup" target="dummy">&#x1F50A;</a>
-    </div>
-    <br />
-    <div id="stations"></div>
-    <br />
-    <form action="playurl" target="dummy">
-        <input type="text" name="playurl"></input>
-        <input type="submit" value="play url">
-    </form>
-    <br />
-    <br />
-    <a href="/config">config</a><br />
-
-    <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
-</body>
-
-</html>
-)rawliteral";
-
-const char _DEFAULT_CONFIG[] PROGMEM = R"rawliteral(
-{
-    "stations": [
-        {
-            "name": "Radio Rock Norge",
-            "url": "http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true"
-        },
-        {
-            "name": "Bob SH",
-            "url": "http://streams.radiobob.de/bob-shlive/mp3-128/streams.radiobob.de/play.m3u"
-        },
-        {
-            "name": "Delta Foehnfrisur",
-            "url": "http://streams.deltaradio.de/delta-foehnfrisur/mp3-128/streams.deltaradio.de/play.m3u"
-        },
-        {
-            "name": "Bob Metal",
-            "url": "http://streams.radiobob.de/bob-metal/mp3-128/streams.radiobob.de/play.m3u"
-        },
-        {
-            "name": "NDR2",
-            "url": "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u"
-        }
-    ]
-}
-)rawliteral";
-
-#include "Button2.h"
+#include <Button2.h>
 Button2 button3, button4;
 
 // SPI GPIOs
@@ -515,8 +269,8 @@ void setVolume(int value)
 #endif
 
 #ifdef DAC2USE_AC101
-  dac.setVolumeSpeaker(value);
-  dac.setVolumeHeadphone(value);
+  dac.SetVolumeSpeaker(value);
+  dac.SetVolumeHeadphone(value);
 #endif
 
   asyncWebSocket.textAll("V\t" + String(volume));
@@ -574,11 +328,11 @@ void playUrl(const char *url)
   currentStationNum = -1;
   for (JsonVariant v : array)
   {
-    if (!strncmp(url, v["url"].as<string>().c_str(), strlen(url)))
+    if (!strncmp(url, v["url"].as<String>().c_str(), strlen(url)))
     {
       // Serial.print("FOUND::: ");
       currentStationNum = i;
-      sprintf(lastPlayedStation, "%s", v["name"].as<string>().c_str());
+      sprintf(lastPlayedStation, "%s", v["name"].as<String>().c_str());
     }
     // Serial.println(v.as<string>().c_str());
     i++;
@@ -604,7 +358,7 @@ void changeSationIndex(int newIndex)
     if (i == newIndex)
     {
       currentStationNum = newIndex;
-      playUrl(v["url"].as<string>().c_str());
+      playUrl(v["url"].as<String>().c_str());
       return;
     }
     i++;
@@ -753,15 +507,27 @@ void setup()
     actionVolumeDown(); });
 
   asyncWebServer.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request)
-                    { request->send(200, "application/json", String()                                                                   //
-                                                                 + F("{")                                                               //
-                                                                 + F("\n  \"lastPlayedUrl\": \"") + String(lastPlayedUrl) + F("\"")     //
-                                                                 + F("\n, \"rssi\": \"") + String(WiFi.RSSI()) + F("\"")                //
-                                                                 + F("\n, \"hostname\": \"") + String(WiFi.getHostname()) + F("\"")     //
-                                                                 + F("\n, \"SSID\": \"") + String(WiFi.SSID()) + F("\"")                //
-                                                                 + F("\n, \"compile_date\": \"") + String(compile_date) + F("\"")       //
-                                                                 + F("\n, \"sdk_version\": \"") + String(ESP.getSdkVersion()) + F("\"") //
-                                                                 + F("\n, \"PIO_ENV\": \"") + String(PIO_ENV) + F("\"") + F("\n}")); });
+                    {
+                      JsonDocument responseJson;
+                      // responseJson["lastPlayedUrl"] = lastPlayedUrl;
+                      responseJson["rssi"] = WiFi.RSSI();
+                      responseJson["hostname"] = WiFi.getHostname();
+                      responseJson["SSID"] = WiFi.SSID();
+                      responseJson["compile_date"] = compile_date;
+                      responseJson["sdk_version"] = ESP.getSdkVersion();
+                      responseJson["FreeHeap"] = ESP.getFreeHeap();
+                      responseJson["MinFreeHeap"] = ESP.getMinFreeHeap();
+                      responseJson["FreeSketchSpace"] = ESP.getFreeSketchSpace();
+#ifdef BOARD_HAS_PSRAM
+                      responseJson["FreePsram"] = ESP.getFreePsram();
+                      responseJson["MinFreePsram"] = ESP.getMinFreePsram();
+#endif
+                      responseJson["DAC"] = DACNAME;
+                      responseJson["PIO_ENV"] = PIO_ENV;
+                      responseJson["uptime"] = millis();
+                      AsyncResponseStream *response = request->beginResponseStream("application/json");
+                      serializeJsonPretty(responseJson, *response);
+                      request->send(response); });
 
   asyncWebSocket.onEvent(onWebSocketEvent);
   asyncWebServer.addHandler(&asyncWebSocket);
@@ -911,7 +677,9 @@ void setup()
   memset(lastPlayedUrl, sizeof(lastPlayedUrl), 0);
   memset(lastPlayedStreamTitle, sizeof(lastPlayedStreamTitle), 0);
 
-  playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
+  // playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
+
+    changeSationIndex(0);
 }
 
 //-----------------------------------------------------------------------

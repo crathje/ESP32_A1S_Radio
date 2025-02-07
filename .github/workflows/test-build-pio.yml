@@ -35,7 +35,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install --upgrade platformio
     - name: Run PlatformIO
-      run: pio run -e AI-Thinker-ESP32-Aduti-Kit-V2_2-ES8388 -e AI-Thinker-ESP32-Aduti-Kit-V2_2-AC101
+      run: pio run -e AI-Thinker-ESP32-Audio-Kit-V2_2-ES8388 -e AI-Thinker-ESP32-Audio-Kit-V2_2-AC101
       working-directory: .
     - name: Store builds
       uses: actions/upload-artifact@v4
