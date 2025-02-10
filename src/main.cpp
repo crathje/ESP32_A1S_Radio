@@ -27,6 +27,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
+#include <SD.h>
 // #include <SPIFFS.h>
 #include "main.h"
 
@@ -37,7 +38,15 @@ TwoWire I2C_2 = TwoWire(1);
 #include <Adafruit_SSD1306.h>
 // #include <U8g2lib.h>
 
+// #define USE_ARDUINO_AUDIO_TOOLS 1
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+#include "AudioTools.h"
+#include "AudioTools/AudioLibs/SPDIFOutput.h"
+#include "AudioTools/AudioCodecs/CodecMP3Helix.h"
+#else              // USE_ARDUINO_AUDIO_TOOLS
 #include "Audio.h" //https://github.com/schreibfaul1/ESP32-audioI2S
+#endif             // USE_ARDUINO_AUDIO_TOOLS
+
 AsyncWebServer asyncWebServer(80);
 AsyncWebSocket asyncWebSocket("/ws");
 DNSServer dnsServer;
@@ -116,7 +125,44 @@ static ES8388 dac; // ES8388 (new board)
 #endif
 int volume = 70; // 0...100
 
+int GPIO_SPDIFF_OUTPUT = GPIO_NUM_NC;
+
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+
+// const char *urls[] = {
+//     "http://stream.srg-ssr.ch/m/rsj/mp3_128?12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890"};
+
+URLStream urlStream("ssid", "pass");
+// URLStream urlStream(WiFi.cl);
+// AudioSourceURL source(urlStream, urls, "audio/mp3");
+// AudioSourceURL source(urlStream, "http://localhost/dummy.mp3", "audio/mp3");
+
+MetaDataOutput outMetadata;
+I2SStream i2s;
+AudioInfo info(44100, 2, 16);
+SPDIFOutput spdif;
+// MP3DecoderHelix decoder;
+// AudioPlayer player(source, i2s, decoder);
+// AudioPlayer player(urlStream, i2s, decoder);
+EncodedAudioStream outDeci2s(&i2s, new MP3DecoderHelix());      // Decoding stream
+EncodedAudioStream out2decSpdif(&spdif, new MP3DecoderHelix()); // Decoding stream
+MultiOutput multiOutput;
+StreamCopy copier(multiOutput, urlStream); // copy url to decoders
+
+// prototypes from old Audio.h
+void audio_info(const char *info);
+void audio_id3data(const char *info);
+void audio_eof_mp3(const char *info);
+void audio_showstation(const char *info);
+void audio_showstreamtitle(const char *info);
+void audio_bitrate(const char *info);
+void audio_commercial(const char *info);
+void audio_icyurl(const char *info);
+void audio_lasthost(const char *info);
+void audio_eof_speech(const char *info);
+#else
 Audio audio;
+#endif
 
 // #ifdef U8X8_HAVE_HW_SPI
 // #include <SPI.h>
@@ -280,7 +326,14 @@ void setVolume(int value)
   drawDisplay();
 }
 
-void actionPlayPause() { audio.pauseResume(); }
+void actionPlayPause()
+{
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+  // TODO: implement
+#else
+  audio.pauseResume();
+#endif
+}
 void actionVolumeUp() { setVolume(volume + 1); }
 void actionVolumeDown() { setVolume(volume - 1); }
 
@@ -293,7 +346,14 @@ void actionUpdateStarting()
   dac.mute(ES8388::ES_OUT2, true);
   dac.mute(ES8388::ES_MAIN, true);
 #endif
+
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+  // TODO: implement
+  // player.stop();
+  copier.setActive(false);
+#else
   audio.stopSong();
+#endif
 
   if (foundDisplay)
   {
@@ -320,6 +380,18 @@ void actionUpdateStarting()
 //   //   actionVolumeUp();
 //   // }
 // }
+
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+
+// callback for meta data
+void printMetaData(MetaDataType type, const char *str, int len)
+{
+  Serial.print("==> ");
+  Serial.print(toStr(type));
+  Serial.print(": ");
+  Serial.println(str);
+}
+#endif
 
 void playUrl(const char *url)
 {
@@ -349,7 +421,50 @@ void playUrl(const char *url)
   audio_showstation(lastPlayedStation);
   strcpy(lastPlayedUrl, url);
   asyncWebSocket.textAll("C\t" + String(url));
+
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+  // urls[0] = url;
+  // source = AudioSourceURL(urlStream, urls, "audio/mp3");
+  // source.selectStream(0);
+  // player.stop();
+  // source.urlArray[0] = url;
+  // urlStream.urlArray
+  // source.selectStream(url);
+  // player.play();
+  // urlStream.begin(url,"audio/mp3");
+  copier.setActive(false);
+
+  if (surl.lastIndexOf(".m3u") == surl.length() - 4)
+  {
+    Serial.printf("playUrl:: playlist detected\r\n");
+
+    HTTPClient http;
+    if (http.begin(url))
+    {
+      int httpCode = http.GET();
+      // Serial.printf("playUrl:: httpCode %d\r\n", httpCode);
+      if (httpCode > 0)
+      {
+        // file found at server
+        if (httpCode == HTTP_CODE_OK)
+        {
+          String payload = http.getString();
+          // Serial.printf("playUrl:: payload %s\r\n", payload.c_str());
+
+          // assume easiest format
+          payload.trim();
+          surl = payload;
+        }
+        http.end();
+      }
+    }
+  }
+
+  urlStream.begin(surl.c_str());
+  copier.setActive(true);
+#else
   audio.connecttohost(url);
+#endif
 }
 
 void changeSationIndex(int newIndex)
@@ -453,7 +568,7 @@ void setup()
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
 
   asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-                    { request->send_P(200, "text/html", index_html); });
+                    { request->send(200, "text/html", index_html); });
   asyncWebServer.on("/config.json", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
     AsyncResponseStream *response = request->beginResponseStream("application/json");
@@ -482,14 +597,14 @@ void setup()
                           LittleFS.end();
                           return;
                         } else {
-                          request->send_P(500, "text/html", "Could not mount LittleFS");
+                          request->send(500, "text/html", "Could not mount LittleFS");
                           return;
                         }
                       }
                     // } 
                   }
                 }
-                request->send_P(500, "text/html", "Failed"); });
+                request->send(500, "text/html", "Failed"); });
   asyncWebServer.on("/config", HTTP_GET, [](AsyncWebServerRequest *request)
                     { 
                 char json[_MAX_JSONBUFFERSIZE];
@@ -597,8 +712,7 @@ void setup()
                               display.drawLine(mapped + 1, y, SCREEN_WIDTH - 1, y, BLACK);
                             }
                             display.display();
-                          }
-                        });
+                          } });
   ArduinoOTA.setHostname(wifiManager.getConfiguredSTASSID().c_str());
   //  ArduinoOTA.setPassword("secretPass");
   ArduinoOTA.begin();
@@ -674,14 +788,78 @@ void setup()
   }
   setVolume(volume);
 
+  if (configJSON["GPIO_SPDIFF_OUTPUT"].is<int>())
+  {
+    GPIO_SPDIFF_OUTPUT = configJSON["GPIO_SPDIFF_OUTPUT"].as<int>();
+  }
+
   //  ac.DumpRegisters();
 
   // Enable amplifier
   pinMode(GPIO_PA_EN, OUTPUT);
   digitalWrite(GPIO_PA_EN, HIGH);
+#ifdef USE_ARDUINO_AUDIO_TOOLS
 
+  AudioToolsLogger.begin(Serial, AudioToolsLogLevel::Warning);
+
+  // // setup output
+  if (GPIO_SPDIFF_OUTPUT != GPIO_NUM_NC)
+  {
+    // hardware similar to https://github.com/pschatzmann/ESP32-A2DP/discussions/137#discussioncomment-2261009
+    auto spdifcfg = spdif.defaultConfig();
+    spdifcfg.copyFrom(info);
+    spdifcfg.buffer_size = 384;
+    spdifcfg.buffer_count = 30;
+    spdifcfg.pin_data = GPIO_SPDIFF_OUTPUT;
+    spdif.begin(spdifcfg);
+    multiOutput.add(out2decSpdif);
+  }
+  else
+  {
+    // setup output
+    auto cfg = i2s.defaultConfig(TX_MODE);
+    cfg.pin_bck = I2S_BCLK;
+    cfg.pin_data = I2S_DOUT;
+    cfg.pin_data_rx = I2S_GPIO_UNUSED;
+    cfg.pin_mck = I2S_MCLK;
+    cfg.pin_ws = I2S_LRC;
+    i2s.begin(cfg);
+    multiOutput.add(outDeci2s);
+  }
+
+  multiOutput.add(outMetadata);
+
+  // setup input
+  // urlStream.begin("https://pschatzmann.github.io/Resources/audio/audio.mp3","audio/mp3");
+  // urlStream.begin("http://regiocast.streamabc.net/regc-boblivesh-mp3-128-1782603?sABC=67n9s8n2%230%23q6osp9r5o1372rpon5s444s16o34pn4q%23fgernzf.enqvbobo.qr&aw_0_1st.playerid=streams.radiobob.de&amsparams=playerid:streams.radiobob.de;skey:1739192482", "audio/mp3");
+
+  // setup metadata
+  outMetadata.setCallback(printMetaData);
+  // outMetadata.begin(urlStream.httpRequest());
+  outMetadata.begin();
+
+  // set up source
+  // source.setTimeout(800);
+  // urlStream.setTimeout(800);
+
+  // setup player
+  // begin is called from changestation
+  // player.begin();
+
+  // setup I2S based on sampling rate provided by decoder
+
+  if (GPIO_SPDIFF_OUTPUT != GPIO_NUM_NC)
+  {
+    out2decSpdif.begin();
+  }
+  else
+  {
+    outDeci2s.begin();
+  }
+#else // USE_ARDUINO_AUDIO_TOOLS
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_MCLK);
   audio.setVolume(10); // 0...21
+#endif
 
   // audio.connecttoFS(SD, "/320k_test.mp3");
   // audio.connecttoSD("/Banana Boat Song - Harry Belafonte.mp3");
@@ -713,7 +891,12 @@ void setup()
 
 void loop()
 {
+#ifdef USE_ARDUINO_AUDIO_TOOLS
+  // player.copy();
+  copier.copy();
+#else  // USE_ARDUINO_AUDIO_TOOLS
   audio.loop();
+#endif // USE_ARDUINO_AUDIO_TOOLS
   // button3.loop();
   // button4.loop();
   // button5.loop();

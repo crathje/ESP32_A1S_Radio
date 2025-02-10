@@ -260,6 +260,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <br />
 
     <a href="/config">config</a><br />
+    <a href="/data.json">data.json</a><br />
 
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
     <div id="footer"></div>
@@ -268,9 +269,12 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
     )rawliteral";
     
+#define _DEFAULT_GPIO_SPDIFF_OUTPUT 12
     const char _DEFAULT_CONFIG[] PROGMEM = R"rawliteral(
 {
   "volume": 70,
+  "hostname": "",
+  "GPIO_SPDIFF_OUTPUT": -1,
   "stations": [
     {
       "name": "Radio Rock Norge",
