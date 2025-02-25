@@ -8,10 +8,10 @@ const char index_html[] PROGMEM = R"rawliteral(
 <html lang="en">
 
 <head>
+    <title>ESP32_A1S_Ratio - %HOSTNAME%</title>
     <style>
         a:link {
-            text-decoration: none;
-            font-size: 40px;
+            text-decoration: none;            
         }
 
         div {
@@ -40,7 +40,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             text-align: center;
         }
 
-        .button {
+        button {
             border: none;
             background-color: #cccccc;
             padding: 15px 32px;
@@ -53,11 +53,11 @@ const char index_html[] PROGMEM = R"rawliteral(
             box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
         }
 
-        .button:hover {
+        button:hover {
             box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 255, 0.80);
         }
 
-        .button:active {
+        button:active {
             box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(255, 0, 255, 0.80);
         }
 
@@ -109,7 +109,8 @@ const char index_html[] PROGMEM = R"rawliteral(
     <script>
         // develope is easier local
         var host = 'A1S-Radio-448026455F34.home'
-        host = 'a1s-radio-9cfab1f7a608.home'
+        // host = 'a1s-radio-9cfab1f7a608.home'
+        // host = 'a1s-radio-d0f7b1f7a608.home'
         var websocket;
 
         // borrowed from https://gist.github.com/g1eb/62d9a48164fe7336fdf4845e22ae3d2c
@@ -140,7 +141,8 @@ const char index_html[] PROGMEM = R"rawliteral(
             default:
         }
 
-        ;
+        document.title = document.title.replace("%HOSTNAME%", host);
+
         websocket = new WebSocket('ws://' + host + '/ws');
         // websocket.onopen    = onOpen;
         // websocket.onclose   = onClose;
@@ -158,19 +160,26 @@ const char index_html[] PROGMEM = R"rawliteral(
                         document.getElementById('currentPlaying').innerHTML = payload
                         document.getElementById('station').innerHTML = '&#x2047;'
                         document.getElementById('streamInfo').innerHTML = '&#x2047;'
+                        document.title = '???' + document.title.substring(document.title.lastIndexOf(' - '))
                         break
                     case 'V':
                         document.getElementById('volume-bar-label').textContent = payload
                         document.getElementById('volume-bar-fill').style.width = payload + '%'
+                        var volSlider = document.getElementById('volume')
+                        if (volSlider.value != parseInt(payload.toString())) {
+                            volSlider.value = parseInt(payload.toString())
+                        }
                         break
                     case 'ASTA':
                         if (payload.length > 0) {
                             document.getElementById('station').textContent = payload
+                            document.title = payload + document.title.substring(document.title.lastIndexOf(' - '))
                         }
                         break
                     case 'ASTT':
                         if (payload.length > 0) {
                             document.getElementById('streamInfo').textContent = payload
+                            document.title = payload + document.title.substring(document.title.lastIndexOf(' - '))
                         }
                         break
                     default:
@@ -214,16 +223,22 @@ const char index_html[] PROGMEM = R"rawliteral(
         });
         xhrConfig.open("GET", "http://" + host + "/config.json");
         xhrConfig.send();
-
+        
+        function volumeSliderOnChange(val) {
+            //document.getElementById('textInput').value=val; 
+            var xhrData = new XMLHttpRequest();
+            xhrData.open("GET", "http://" + host + "/volume?v=" + val);
+            xhrData.send();
+        }
 
         const loadFooter = function () {
             var xhrData = new XMLHttpRequest();
             xhrData.addEventListener("load", function () {
                 var dataJson = JSON.parse(this.responseText)
                 var footer = document.getElementById('footer')
-                footer.innerHTML = '<small>' + convertTime(dataJson.uptime / 1000) + ' &centerdot; ' 
-                    + (dataJson.FreeHeap / 1024).toFixed(3) + 'kb &centerdot; (min: ' 
-                    + (dataJson.MinFreeHeap / 1024).toFixed(3) + 'kb) &centerdot; ' 
+                footer.innerHTML = '<small>' + convertTime(dataJson.uptime / 1000) + ' &centerdot; '
+                    + (dataJson.FreeHeap / 1024).toFixed(3) + 'kb &centerdot; (min: '
+                    + (dataJson.MinFreeHeap / 1024).toFixed(3) + 'kb) &centerdot; '
                     + dataJson.compile_date + '</small></i>'
             });
             xhrData.open("GET", "http://" + host + "/data.json");
@@ -243,11 +258,16 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div id="volume-bar-label" class="centered">&nbsp;</div>
         <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
     </div>
+    <div>
+        <input type="range" id="volume" class="volume-bar" name="volume" min="0" max="100" onchange="volumeSliderOnChange(this.value);" />
+    </div>
     <br />
     <div id="buttons" class="buttonscontainer">
-        <a class="button" href="playpause" target="dummy">&#x23ef;</a>
-        <a class="button" href="voldown" target="dummy">&#x1f509;</a>
-        <a class="button" href="volup" target="dummy">&#x1F50A;</a>
+        <button onclick="websocket.send('stationdown')">&#x23EE;</button>
+        <button onclick="websocket.send('voldown')">&#x1f509;</button>
+        <button onclick="websocket.send('playpause')">&#x23ef;</button>
+        <button onclick="websocket.send('volup')">&#x1F50A;</button>
+        <button onclick="websocket.send('stationup')">&#x23ED;</button>
     </div>
     <br />
     <div id="stations"></div>
@@ -260,7 +280,8 @@ const char index_html[] PROGMEM = R"rawliteral(
     <br />
 
     <a href="/config">config</a><br />
-    <a href="/data.json">data.json</a><br />
+    <a href="/update">update</a><br />
+    <a href="/data.json">data</a><br />
 
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
     <div id="footer"></div>
@@ -272,9 +293,13 @@ const char index_html[] PROGMEM = R"rawliteral(
 #define _DEFAULT_GPIO_SPDIFF_OUTPUT 12
     const char _DEFAULT_CONFIG[] PROGMEM = R"rawliteral(
 {
-  "volume": 70,
+  "volume": 60,
   "hostname": "",
   "GPIO_SPDIFF_OUTPUT": -1,
+  "SCREEN_WIDTH": 128,
+  "SCREEN_HEIGHT": 32,
+  "IIC_EXTERNAL_CLK": 5,
+  "IIC_EXTERNAL_DATA": 18,
   "stations": [
     {
       "name": "Radio Rock Norge",
@@ -295,6 +320,14 @@ const char index_html[] PROGMEM = R"rawliteral(
     {
       "name": "NDR2",
       "url": "http://www.ndr.de/resources/metadaten/audio/m3u/ndr2_sh.m3u"
+    },
+    {
+      "name": "Bob Alternative",
+      "url": "http://streams.radiobob.de/bob-alternative/mp3-128/streams.radiobob.de/play.m3u"
+    },
+    {
+      "name": "Bob Symphmetal",
+      "url": "http://streams.radiobob.de/symphmetal/mp3-192/streams.radiobob.de/play.m3u"
     }
   ]
 }

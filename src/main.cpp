@@ -28,6 +28,7 @@
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <SD.h>
+#include <time.h>
 // #include <SPIFFS.h>
 #include "main.h"
 
@@ -59,7 +60,12 @@ char lastPlayedStation[2048];
 
 JsonDocument configJSON;
 const char *CONFIGFILENAME = "/radioconf.json";
-#define _MAX_JSONBUFFERSIZE 2048
+#define _MAX_JSONBUFFERSIZE 3072
+
+const char *ntpServer = "pool.ntp.org";
+long gmtOffset_sec = 0;
+const int daylightOffset_sec = 60000;
+struct tm timeinfo;
 
 volatile int currentStationNum = -1;
 
@@ -101,9 +107,9 @@ volatile int currentStationNum = -1;
 // #define BUTTON_5_PIN 18 // Stop
 // #define BUTTON_6_PIN 5  // Play
 
-#define IIC_EXTERNAL_CLK 5
-#define IIC_EXTERNAL_DATA 18
-#define IIC_EXTERNAL_DATA_FREQ 400000
+int8_t IIC_EXTERNAL_CLK = 5;
+int8_t IIC_EXTERNAL_DATA = 18;
+int IIC_EXTERNAL_DATA_FREQ = 400000;
 
 // amplifier enable
 #define GPIO_PA_EN 21
@@ -173,11 +179,11 @@ Audio audio;
 // U8G2_SSD1306_128X32_UNIVISION_1_2ND_HW_I2C u8g2(U8G2_R0 /* rotation */, /* reset=*/U8X8_PIN_NONE, IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
 // U8G2_SH1106_128X64_NONAME_F_2ND_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, 4, 5);
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 32
+uint16_t _screen_width = 128;
+uint16_t _screen_height = 32;
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2C_2, -1);
-volatile boolean foundDisplay = false;
+Adafruit_SSD1306 *display_ssd1306; // (_screen_width, _screen_height, &I2C_2, -1);
+volatile boolean foundSSD1306Display = false;
 
 // #####################################################################
 
@@ -245,57 +251,87 @@ void loadConfigFromFlash()
   Serial.printf("configLoaded: %d size: %d stations: %d\r\n", configLoaded, configJSON.size(), configJSON["stations"].size());
 }
 
+void setAmpEnabled(boolean enable)
+{
+  // Enable amplifier
+  if (GPIO_PA_EN != GPIO_NUM_NC)
+  {
+    pinMode(GPIO_PA_EN, OUTPUT);
+    digitalWrite(GPIO_PA_EN, enable ? HIGH : LOW);
+  }
+}
+
+int getUTCOffsetMinutes()
+{
+  HTTPClient http;
+  http.setTimeout(2000);
+  int utcoffsetminutes = 0;
+  // this includes DST!
+  if (http.begin("http://iot.thje.net/time.php?utcoffset&tz=Europe%2FBerlin"))
+  {
+    int httpCode = http.GET();
+
+    if (httpCode == HTTP_CODE_OK)
+    {
+      String payload = http.getString();
+      utcoffsetminutes = payload.toInt();
+      // timeClient.setTimeOffset(utcoffsetminutes);
+      ESP_LOGI("getUTCOffsetMinutes()", "UTC OFFSET: %dmin", utcoffsetminutes);
+      http.end();
+    }
+    else
+    {
+      ESP_LOGE("getUTCOffsetMinutes()", "HTTP CODE: %d", httpCode);
+      return utcoffsetminutes;
+    }
+  }
+  else
+  {
+    ESP_LOGE("getUTCOffsetMinutes()", "Failed to get UTC Offset");
+  }
+  return utcoffsetminutes;
+}
+
 void drawDisplay()
 {
-  if (foundDisplay)
+  if (foundSSD1306Display)
   {
-    display.clearDisplay();
-    display.setTextColor(WHITE);
-    display.setTextSize(1);
-    display.setCursor(0, 0);
+    display_ssd1306->clearDisplay();
+    display_ssd1306->setTextColor(WHITE);
+    display_ssd1306->setTextSize(1);
+    display_ssd1306->setCursor(0, 0);
     String lastPlayedStationS = String(lastPlayedStation);
     char buff[100];
+    int16_t x1, y1;
+    uint16_t w = _screen_width + 1, h;
+    display_ssd1306->setTextWrap(false);
     sprintf(buff, "%s%s", currentStationNum < 0 ? "" : "" + String(currentStationNum) + ": ", //
-            lastPlayedStationS.substring(0, 20).c_str());
-    display.println(buff);
-    display.println(lastPlayedStreamTitle);
+            lastPlayedStation);
+    display_ssd1306->println(buff);
+    display_ssd1306->setTextWrap(true);
+    display_ssd1306->println(lastPlayedStreamTitle);
 
-    int mapped = map(volume, 0, 100, 0, SCREEN_WIDTH);
-    for (int y = SCREEN_HEIGHT - 3; y < SCREEN_HEIGHT; y++)
+    display_ssd1306->setCursor(0, _screen_height - 7);
+    getLocalTime(&timeinfo);
+    strftime(buff, sizeof(buff), timeinfo.tm_sec % 2 == 0 ? "%H:%M" : "%H %M", &timeinfo);
+    display_ssd1306->println(buff);
+
+    display_ssd1306->getTextBounds(buff, 0, 0, &x1, &y1, &w, &h);
+
+    int volBarX = w - x1 + 3;
+    int mapped = map(volume, 0, 100, 0, _screen_width - volBarX);
+    for (int y = _screen_height - 4; y < _screen_height - 1; y++)
     {
-      display.drawLine(0, y, mapped, y, WHITE);
-      display.drawLine(mapped + 1, y, SCREEN_WIDTH - 1, y, BLACK);
+      display_ssd1306->drawLine(volBarX, y, volBarX + mapped, y, WHITE);
+      display_ssd1306->drawLine(volBarX + mapped + 1, y, _screen_width - 1, y, BLACK);
     }
+    display_ssd1306->drawLine(volBarX, _screen_height - 1, _screen_width, _screen_height - 1, WHITE);
 
-    display.display();
+    display_ssd1306->display();
   }
 }
 
-void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-                      void *arg, uint8_t *data, size_t len)
-{
-  switch (type)
-  {
-  case WS_EVT_CONNECT:
-    // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-    client->text("C\t" + String(lastPlayedUrl));
-    client->text("ASTT\t" + String(lastPlayedStreamTitle));
-    client->text("ASTA\t" + String(lastPlayedStation));
-    client->text("V\t" + String(volume));
-    break;
-  case WS_EVT_DISCONNECT:
-    // Serial.printf("WebSocket client #%u disconnected\n", client->id());
-    break;
-  case WS_EVT_DATA:
-    // handleWebSocketMessage(arg, data, len);
-    break;
-  case WS_EVT_PONG:
-  case WS_EVT_ERROR:
-    break;
-  }
-}
-
-void setVolume(int value)
+void setVolume(int value, boolean justTemporary = false)
 {
   // Serial.printf("Volume set to: %d\r\n", value);
   if (value > 100)
@@ -307,7 +343,10 @@ void setVolume(int value)
     value = 0;
   }
 
-  volume = value;
+  if (!justTemporary)
+  {
+    volume = value;
+  }
 #ifdef DAC2USE_ES8388
   dac.volume(ES8388::ES_MAIN, value);
   dac.volume(ES8388::ES_OUT1, value);
@@ -322,8 +361,11 @@ void setVolume(int value)
   dac.SetVolumeHeadphone(value);
 #endif
 
-  asyncWebSocket.textAll("V\t" + String(volume));
-  drawDisplay();
+  if (!justTemporary)
+  {
+    asyncWebSocket.textAll("V\t" + String(volume));
+    drawDisplay();
+  }
 }
 
 void actionPlayPause()
@@ -339,7 +381,8 @@ void actionVolumeDown() { setVolume(volume - 1); }
 
 void actionUpdateStarting()
 {
-  digitalWrite(GPIO_PA_EN, LOW);
+  setAmpEnabled(false);
+
 // mute!
 #ifdef DAC2USE_ES8388
   dac.mute(ES8388::ES_OUT1, true);
@@ -355,15 +398,18 @@ void actionUpdateStarting()
   audio.stopSong();
 #endif
 
-  if (foundDisplay)
+  if (foundSSD1306Display)
   {
-    display.clearDisplay();
-    display.setTextColor(WHITE);
-    display.setTextSize(2);
-    display.setCursor(0, 0);
-    display.println("Updating");
-    display.display();
+    display_ssd1306->clearDisplay();
+    display_ssd1306->setTextColor(WHITE);
+    display_ssd1306->setTextSize(2);
+    display_ssd1306->setCursor(0, 0);
+    display_ssd1306->println("Updating");
+    display_ssd1306->display();
   }
+  asyncWebSocket.textAll("C\tOTA Updating...");
+  asyncWebSocket.textAll("AINF\tOTA Updating...");
+  asyncWebSocket.textAll("ASTT\tOTA Updating...");
 }
 
 // void buttonClick(Button2 &btn)
@@ -390,11 +436,28 @@ void printMetaData(MetaDataType type, const char *str, int len)
   Serial.print(toStr(type));
   Serial.print(": ");
   Serial.println(str);
+
+  // if (foundSSD1306Display)
+  // {
+  //   if (type == MetaDataType::StreamTitle)
+  //   {
+  //     display_ssd1306->clearDisplay();
+  //     display_ssd1306->setTextColor(WHITE);
+  //     display_ssd1306->setTextSize(1);
+  //     display_ssd1306->setCursor(0, 0);
+  //     display_ssd1306->println(toStr(type));
+  //     display_ssd1306->println(str);
+  //     drawDisplay();
+  //   }
+  // }
 }
 #endif
 
 void playUrl(const char *url)
 {
+  int oldVol = volume;
+  setVolume(0, true);
+  // setAmpEnabled(false);
   audio_showstreamtitle("");
   lastPlayedStation[0] = 0;
 
@@ -465,9 +528,12 @@ void playUrl(const char *url)
 #else
   audio.connecttohost(url);
 #endif
+
+  // setAmpEnabled(true);
+  setVolume(oldVol, true);
 }
 
-void changeSationIndex(int newIndex)
+void changeStationIndex(int newIndex)
 {
   if (currentStationNum == newIndex)
   {
@@ -488,6 +554,55 @@ void changeSationIndex(int newIndex)
   // not found, not changing anything
 }
 
+void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+                      void *arg, uint8_t *data, size_t len)
+{
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
+  switch (type)
+  {
+  case WS_EVT_CONNECT:
+    // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    client->text("C\t" + String(lastPlayedUrl));
+    client->text("ASTT\t" + String(lastPlayedStreamTitle));
+    client->text("ASTA\t" + String(lastPlayedStation));
+    client->text("V\t" + String(volume));
+    break;
+  case WS_EVT_DISCONNECT:
+    // Serial.printf("WebSocket client #%u disconnected\n", client->id());
+    break;
+  case WS_EVT_DATA:
+    // handleWebSocketMessage(arg, data, len);
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+    {
+      data[len] = 0;
+      if (strcmp((char *)data, "stationdown") == 0)
+      {
+        changeStationIndex(currentStationNum - 1);
+      }
+      else if (strcmp((char *)data, "stationup") == 0)
+      {
+        changeStationIndex(currentStationNum + 1);
+      }
+      else if (strcmp((char *)data, "playpause") == 0)
+      {
+        actionPlayPause();
+      }
+      else if (strcmp((char *)data, "voldown") == 0)
+      {
+        setVolume(volume - 1);
+      }
+      else if (strcmp((char *)data, "volup") == 0)
+      {
+        setVolume(volume + 1);
+      }
+    }
+    break;
+  case WS_EVT_PONG:
+    break;
+  case WS_EVT_ERROR:
+    break;
+  }
+}
 void setup()
 {
   Serial.begin(115200);
@@ -538,6 +653,100 @@ void setup()
     volume = configJSON["volume"].as<int>();
   }
 
+  if (configJSON["SCREEN_WIDTH"].is<int>())
+  {
+    _screen_width = configJSON["SCREEN_WIDTH"].as<int>();
+  }
+
+  if (configJSON["SCREEN_HEIGHT"].is<int>())
+  {
+    _screen_height = configJSON["SCREEN_HEIGHT"].as<int>();
+  }
+
+  if (configJSON["IIC_EXTERNAL_CLK"].is<int>())
+  {
+    IIC_EXTERNAL_CLK = configJSON["IIC_EXTERNAL_CLK"].as<int>();
+  }
+
+  if (configJSON["IIC_EXTERNAL_DATA"].is<int>())
+  {
+    IIC_EXTERNAL_DATA = configJSON["IIC_EXTERNAL_DATA"].as<int>();
+  }
+
+  display_ssd1306 = new Adafruit_SSD1306(_screen_width, _screen_height, &I2C_2, -1);
+
+  if (IIC_EXTERNAL_DATA != GPIO_NUM_NC && IIC_EXTERNAL_CLK != GPIO_NUM_NC)
+  {
+    Serial.printf("Starting 2nd I2C on data: %d clk: %d...", IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
+    I2C_2.begin(IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK, IIC_EXTERNAL_DATA_FREQ);
+    Serial.printf("OK\r\n");
+
+    Serial.println();
+    Serial.println("I2C scanner. Scanning ...");
+    uint8_t count = 0;
+
+#define MIN_I2C_DEVICE_ADDR 8
+#define MAX_I2C_DEVICE_ADDR 120
+    // for (uint8_t i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
+    for (uint8_t i = SSD1306_ADDRESS; i < SSD1306_ADDRESS + 1; i++)
+    {
+      I2C_2.beginTransmission(i);
+      if (I2C_2.endTransmission() == 0)
+      {
+        Serial.printf("Found 0x%02x\r\n", i);
+        if (i == SSD1306_ADDRESS)
+        {
+          foundSSD1306Display = true;
+        }
+      }
+      else
+      {
+        // Serial.printf("Absent 0x%02x", i);
+      }
+    }
+    Serial.printf("DONE\r\n");
+  }
+
+  if (foundSSD1306Display)
+  {
+    Serial.printf("SSD1306 display init (0x%02x)...", SSD1306_ADDRESS);
+    // fonts see https://github.com/olikraus/u8g2/wiki/fntlist8
+    // if (u8g2.begin())
+    // {
+    //   Serial.println(F("OK"));
+    //   u8g2.setPowerSave(0);
+    //   u8g2.clearBuffer();
+    //   u8g2.setFont(u8g2_font_ncenB08_tr);
+    //   u8g2.drawStr(0, 10, "Booting...");
+    //   u8g2.setFont(u8g2_font_squeezed_r7_tr);
+    //   u8g2.drawStr(0, 20, compile_date);
+    //   u8g2.sendBuffer();
+    //   u8g2.setFont(u8g2_font_ncenB08_tr);
+    // }
+    // else
+    // {
+    //   Serial.println(F("FAILED"));
+    // }
+    // #define SSD1306_EXTERNALVCC 0x01  ///< External display voltage source
+    // #define SSD1306_SWITCHCAPVCC 0x02 ///< Gen. display voltage from 3.3V
+    display_ssd1306->begin(SSD1306_SWITCHCAPVCC, SSD1306_ADDRESS);
+    display_ssd1306->dim(false);
+    // display.ssd1306_command(SSD1306_SETCONTRAST);
+    // display.ssd1306_command(0xFF);
+
+    display_ssd1306->clearDisplay();
+    display_ssd1306->display();
+
+    display_ssd1306->setTextColor(WHITE);
+    display_ssd1306->setTextSize(2);
+    display_ssd1306->setCursor(0, 0);
+    display_ssd1306->println("Booting...");
+    display_ssd1306->setTextSize(1);
+    display_ssd1306->setCursor(0, _screen_height - 7);
+    display_ssd1306->println(compile_date);
+    display_ssd1306->display();
+  }
+
   pinMode(SD_CS, OUTPUT);
   digitalWrite(SD_CS, HIGH);
   SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
@@ -562,13 +771,20 @@ void setup()
   WiFi.setHostname(hostname);
   wifiManager.autoConnect(hostname, NULL);
 
+  // Init and get the time
+  gmtOffset_sec = getUTCOffsetMinutes() * 60;
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
 
   asyncWebServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-                    { request->send(200, "text/html", index_html); });
+                    { 
+                      static const size_t htmlContentLength = strlen_P(index_html);
+
+                      request->send(200, "text/html", (uint8_t *)index_html, htmlContentLength); });
   asyncWebServer.on("/config.json", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
     AsyncResponseStream *response = request->beginResponseStream("application/json");
@@ -617,13 +833,22 @@ void setup()
     actionPlayPause(); });
   asyncWebServer.on("/playurl", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
-    if (request->hasParam("playurl")) {
-      String url = request->getParam("playurl")->value();
-      playUrl(url.c_str());
-      request->send(200, "text/plain", "OK");
-      return;
-    }
-    request->send(200, "text/plain", "FAILED"); });
+      if (request->hasParam("playurl")) {
+        String url = request->getParam("playurl")->value();
+        playUrl(url.c_str());
+        request->send(200, "text/plain", "OK");
+        return;
+      }
+      request->send(200, "text/plain", "FAILED"); });
+  asyncWebServer.on("/volume", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
+        if (request->hasParam("v")) {
+          int v = request->getParam("v")->value().toInt();
+          setVolume(v);
+          request->send(200, "text/plain", "OK");   
+          return;
+        }
+        request->send(200, "text/plain", "FAILED"); });
   asyncWebServer.on("/volup", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
     request->send(200, "text/plain", "OK");
@@ -650,6 +875,15 @@ void setup()
                       responseJson["FreePsram"] = ESP.getFreePsram();
                       responseJson["MinFreePsram"] = ESP.getMinFreePsram();
 #endif
+                      if (LittleFS.begin(true)) {    
+                        responseJson["LittleFSTotal"] = LittleFS.totalBytes();
+                        responseJson["LittleFSUsed"] = LittleFS.usedBytes();
+                        LittleFS.end();
+                      }
+
+                      responseJson["gmtOffset_sec"] = gmtOffset_sec;
+                      responseJson["daylightOffset_sec"] = daylightOffset_sec;
+                      
                       responseJson["DAC"] = DACNAME;
                       responseJson["PIO_ENV"] = PIO_ENV;
                       responseJson["uptime"] = millis();
@@ -703,15 +937,15 @@ void setup()
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
                         {
                           Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-                          if (foundDisplay)
+                          if (foundSSD1306Display)
                           {
-                            int mapped = map((progress / (total / 100)), 0, 100, 0, SCREEN_WIDTH);
-                            for (int y = SCREEN_HEIGHT - 3; y < SCREEN_HEIGHT; y++)
+                            int mapped = map((progress / (total / 100)), 0, 100, 0, _screen_width);
+                            for (int y = _screen_height - 3; y < _screen_height; y++)
                             {
-                              display.drawLine(0, y, mapped, y, WHITE);
-                              display.drawLine(mapped + 1, y, SCREEN_WIDTH - 1, y, BLACK);
+                              display_ssd1306->drawLine(0, y, mapped, y, WHITE);
+                              display_ssd1306->drawLine(mapped + 1, y, _screen_width - 1, y, BLACK);
                             }
-                            display.display();
+                            display_ssd1306->display();
                           } });
   ArduinoOTA.setHostname(wifiManager.getConfiguredSTASSID().c_str());
   //  ArduinoOTA.setPassword("secretPass");
@@ -725,67 +959,6 @@ void setup()
   }
   Serial.printf("OK\r\n");
 
-  if (IIC_EXTERNAL_DATA != GPIO_NUM_NC && IIC_EXTERNAL_CLK != GPIO_NUM_NC)
-  {
-    Serial.printf("Starting 2nd I2C on data: %d clk: %d...", IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK);
-    I2C_2.begin(IIC_EXTERNAL_DATA, IIC_EXTERNAL_CLK, IIC_EXTERNAL_DATA_FREQ);
-    Serial.printf("OK\r\n");
-
-    Serial.println();
-    Serial.println("I2C scanner. Scanning ...");
-    uint8_t count = 0;
-
-#define MIN_I2C_DEVICE_ADDR 8
-#define MAX_I2C_DEVICE_ADDR 120
-    for (uint8_t i = MIN_I2C_DEVICE_ADDR; i < MAX_I2C_DEVICE_ADDR; i++)
-    {
-      I2C_2.beginTransmission(i);
-      if (I2C_2.endTransmission() == 0)
-      {
-        Serial.printf("Found 0x%02x\r\n", i);
-        if (i == SSD1306_ADDRESS)
-        {
-          foundDisplay = true;
-        }
-      }
-      else
-      {
-        // Serial.printf("Absent 0x%02x", i);
-      }
-    }
-    Serial.printf("DONE\r\n");
-  }
-
-  if (foundDisplay)
-  {
-    Serial.printf("SSD1306 display init (0x%02x)...", SSD1306_ADDRESS);
-    // fonts see https://github.com/olikraus/u8g2/wiki/fntlist8
-    // if (u8g2.begin())
-    // {
-    //   Serial.println(F("OK"));
-    //   u8g2.setPowerSave(0);
-    //   u8g2.clearBuffer();
-    //   u8g2.setFont(u8g2_font_ncenB08_tr);
-    //   u8g2.drawStr(0, 10, "Booting...");
-    //   u8g2.setFont(u8g2_font_squeezed_r7_tr);
-    //   u8g2.drawStr(0, 20, compile_date);
-    //   u8g2.sendBuffer();
-    //   u8g2.setFont(u8g2_font_ncenB08_tr);
-    // }
-    // else
-    // {
-    //   Serial.println(F("FAILED"));
-    // }
-    display.begin(SSD1306_SWITCHCAPVCC, SSD1306_ADDRESS);
-    display.clearDisplay();
-    display.display();
-
-    display.setTextColor(WHITE);
-    display.setTextSize(1);
-    display.setCursor(10, 0);
-    display.println("Booting...");
-    display.display();
-  }
   setVolume(volume);
 
   if (configJSON["GPIO_SPDIFF_OUTPUT"].is<int>())
@@ -794,10 +967,6 @@ void setup()
   }
 
   //  ac.DumpRegisters();
-
-  // Enable amplifier
-  pinMode(GPIO_PA_EN, OUTPUT);
-  digitalWrite(GPIO_PA_EN, HIGH);
 #ifdef USE_ARDUINO_AUDIO_TOOLS
 
   AudioToolsLogger.begin(Serial, AudioToolsLogLevel::Warning);
@@ -858,7 +1027,7 @@ void setup()
   }
 #else // USE_ARDUINO_AUDIO_TOOLS
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_MCLK);
-  audio.setVolume(10); // 0...21
+  audio.setVolume(15); // 0...21
 #endif
 
   // audio.connecttoFS(SD, "/320k_test.mp3");
@@ -883,8 +1052,8 @@ void setup()
   memset(lastPlayedStreamTitle, sizeof(lastPlayedStreamTitle), 0);
 
   // playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
-
-  changeSationIndex(0);
+  setAmpEnabled(true);
+  changeStationIndex(0);
 }
 
 //-----------------------------------------------------------------------
@@ -904,6 +1073,17 @@ void loop()
   ArduinoOTA.handle();
   ElegantOTA.loop();
 
+  if (foundSSD1306Display)
+  {
+    getLocalTime(&timeinfo);
+    static uint8_t secondsWhenShown = timeinfo.tm_sec;
+    if (secondsWhenShown != timeinfo.tm_sec)
+    {
+      secondsWhenShown = timeinfo.tm_sec;
+      drawDisplay();
+    }
+  }
+
   if (ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC && ROTARY_ENCODER_A_CLK_PIN != GPIO_NUM_NC)
   {
     int64_t val = rotaryEncoder.getCount();
@@ -919,7 +1099,7 @@ void loop()
       rotaryEncoder.clearCount();
       if (rotaryPressed)
       {
-        changeSationIndex(currentStationNum + val);
+        changeStationIndex(currentStationNum + val);
       }
       else
       {
