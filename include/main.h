@@ -11,7 +11,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <title>ESP32_A1S_Ratio - %HOSTNAME%</title>
     <style>
         a:link {
-            text-decoration: none;            
+            text-decoration: none;
         }
 
         div {
@@ -143,6 +143,18 @@ const char index_html[] PROGMEM = R"rawliteral(
 
         document.title = document.title.replace("%HOSTNAME%", host);
 
+        function highlightStation() {
+            const curr = document.getElementById('currentPlaying').innerHTML;
+            Array.prototype.forEach.call(document.getElementsByClassName('station'), function (element) {
+                if (element.innerHTML.includes(curr)) {
+                    element.style.backgroundColor = '#FFcccc';
+                } else {
+                    element.style.backgroundColor = '#cccccc';
+                }
+            }
+            );
+        }
+
         websocket = new WebSocket('ws://' + host + '/ws');
         // websocket.onopen    = onOpen;
         // websocket.onclose   = onClose;
@@ -161,6 +173,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                         document.getElementById('station').innerHTML = '&#x2047;'
                         document.getElementById('streamInfo').innerHTML = '&#x2047;'
                         document.title = '???' + document.title.substring(document.title.lastIndexOf(' - '))
+                        highlightStation() 
                         break
                     case 'V':
                         document.getElementById('volume-bar-label').textContent = payload
@@ -216,14 +229,16 @@ const char index_html[] PROGMEM = R"rawliteral(
                     xhr.open("GET", "http://" + host + "/playurl?playurl=" + station.url, true);
                     xhr.send();
                 };
+                ldiv.onclick = playdiv.onclick;
                 singleStationContainer.appendChild(playdiv);
                 singleStationContainer.appendChild(ldiv);
                 stationsDiv.appendChild(singleStationContainer);
             });
+            highlightStation() 
         });
         xhrConfig.open("GET", "http://" + host + "/config.json");
         xhrConfig.send();
-        
+
         function volumeSliderOnChange(val) {
             //document.getElementById('textInput').value=val; 
             var xhrData = new XMLHttpRequest();
@@ -259,7 +274,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div id="volume-bar-fill" class="volume-bar-fill">&nbsp;</div>
     </div>
     <div>
-        <input type="range" id="volume" class="volume-bar" name="volume" min="0" max="100" onchange="volumeSliderOnChange(this.value);" />
+        <input type="range" id="volume" class="volume-bar" name="volume" min="0" max="100"
+            onchange="volumeSliderOnChange(this.value);" />
     </div>
     <br />
     <div id="buttons" class="buttonscontainer">
@@ -282,6 +298,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <a href="/config">config</a><br />
     <a href="/update">update</a><br />
     <a href="/data.json">data</a><br />
+    amp <a href="/amp?enable=1">on</a>/<a href="/amp?enable=0">off</a><br />
 
     <iframe src="" name="dummy" style="visibility:hidden;"></iframe>
     <div id="footer"></div>
@@ -296,10 +313,15 @@ const char index_html[] PROGMEM = R"rawliteral(
   "volume": 60,
   "hostname": "",
   "GPIO_SPDIFF_OUTPUT": -1,
+  "GPIO_PA_EN_EXTERNAL": -1,
   "SCREEN_WIDTH": 128,
   "SCREEN_HEIGHT": 32,
   "IIC_EXTERNAL_CLK": 5,
   "IIC_EXTERNAL_DATA": 18,
+  "ROTARY_ENCODER_A_CLK_PIN": 22,
+  "ROTARY_ENCODER_B_DT_PIN": 19,
+  "ROTARY_ENCODER_BUTTON_PIN": 23,
+  "ROTARY_ENCODER_STEPS": 2,
   "stations": [
     {
       "name": "Radio Rock Norge",
@@ -328,6 +350,14 @@ const char index_html[] PROGMEM = R"rawliteral(
     {
       "name": "Bob Symphmetal",
       "url": "http://streams.radiobob.de/symphmetal/mp3-192/streams.radiobob.de/play.m3u"
+    },
+    {
+      "name": "laut.fm/metal",
+      "url": "http://stream.laut.fm/metal"
+    },
+    {
+      "name": "antenne/hair",
+      "url": "https://stream.rockantenne.de/hair-metal/stream/mp3"
     }
   ]
 }

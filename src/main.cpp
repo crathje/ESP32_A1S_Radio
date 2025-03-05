@@ -53,7 +53,7 @@ AsyncWebSocket asyncWebSocket("/ws");
 DNSServer dnsServer;
 char hostname[32 + 1];
 const char compile_date[] = __DATE__ " " __TIME__;
-
+esp_reset_reason_t reason;
 char lastPlayedUrl[2048];
 char lastPlayedStreamTitle[2048];
 char lastPlayedStation[2048];
@@ -67,7 +67,7 @@ long gmtOffset_sec = 0;
 const int daylightOffset_sec = 60000;
 struct tm timeinfo;
 
-volatile int currentStationNum = -1;
+RTC_NOINIT_ATTR int currentStationNum;
 
 // #include <Button2.h>
 // Button2 button3, button4;
@@ -114,10 +114,10 @@ int IIC_EXTERNAL_DATA_FREQ = 400000;
 // amplifier enable
 #define GPIO_PA_EN 21
 
-#define ROTARY_ENCODER_A_CLK_PIN 22
-#define ROTARY_ENCODER_B_DT_PIN 19
-#define ROTARY_ENCODER_BUTTON_PIN 23
-#define ROTARY_ENCODER_STEPS 2
+int8_t ROTARY_ENCODER_A_CLK_PIN = 22;
+int8_t ROTARY_ENCODER_B_DT_PIN = 19;
+int8_t ROTARY_ENCODER_BUTTON_PIN = 23;
+int8_t ROTARY_ENCODER_STEPS = 2;
 ESP32Encoder rotaryEncoder;
 
 // Switch S1: 1-OFF, 2-ON, 3-ON, 4-ON, 5-ON
@@ -129,9 +129,10 @@ static AC101 dac; // AC101
 #ifdef DAC2USE_ES8388
 static ES8388 dac; // ES8388 (new board)
 #endif
-int volume = 70; // 0...100
+RTC_NOINIT_ATTR int volume; // 0...100
 
-int GPIO_SPDIFF_OUTPUT = GPIO_NUM_NC;
+int8_t GPIO_SPDIFF_OUTPUT = GPIO_NUM_NC;
+int8_t GPIO_PA_EN_EXTERNAL = GPIO_NUM_NC;
 
 #ifdef USE_ARDUINO_AUDIO_TOOLS
 
@@ -603,8 +604,30 @@ void onWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsE
     break;
   }
 }
+
+int loadIntFromConfig(const char *key, int defaultValue)
+{
+  if (configJSON[key].is<int>())
+  {
+    return configJSON[key].as<int>();
+  }
+  else
+  {
+    configJSON[key] = defaultValue;
+  }
+  return defaultValue;
+}
+
 void setup()
 {
+  reason = esp_reset_reason();
+
+  if ((reason == ESP_RST_POWERON) || (reason == ESP_RST_UNKNOWN))
+  {
+    currentStationNum = -1;
+    volume = 70;
+  }
+
   Serial.begin(115200);
   Serial.println("\r\nReset");
 
@@ -648,30 +671,21 @@ void setup()
 
   loadConfigFromFlash();
 
-  if (configJSON["volume"].is<int>())
+  // only load volume from conifg if not reset
+  if ((reason == ESP_RST_POWERON) || (reason == ESP_RST_UNKNOWN))
   {
-    volume = configJSON["volume"].as<int>();
+    volume = loadIntFromConfig("volume", volume);
   }
-
-  if (configJSON["SCREEN_WIDTH"].is<int>())
-  {
-    _screen_width = configJSON["SCREEN_WIDTH"].as<int>();
-  }
-
-  if (configJSON["SCREEN_HEIGHT"].is<int>())
-  {
-    _screen_height = configJSON["SCREEN_HEIGHT"].as<int>();
-  }
-
-  if (configJSON["IIC_EXTERNAL_CLK"].is<int>())
-  {
-    IIC_EXTERNAL_CLK = configJSON["IIC_EXTERNAL_CLK"].as<int>();
-  }
-
-  if (configJSON["IIC_EXTERNAL_DATA"].is<int>())
-  {
-    IIC_EXTERNAL_DATA = configJSON["IIC_EXTERNAL_DATA"].as<int>();
-  }
+  _screen_width = loadIntFromConfig("SCREEN_WIDTH", _screen_width);
+  _screen_height = loadIntFromConfig("SCREEN_HEIGHT", _screen_height);
+  IIC_EXTERNAL_CLK = loadIntFromConfig("IIC_EXTERNAL_CLK", IIC_EXTERNAL_CLK);
+  IIC_EXTERNAL_DATA = loadIntFromConfig("IIC_EXTERNAL_DATA", IIC_EXTERNAL_DATA);
+  ROTARY_ENCODER_A_CLK_PIN = loadIntFromConfig("ROTARY_ENCODER_A_CLK_PIN", ROTARY_ENCODER_A_CLK_PIN);
+  ROTARY_ENCODER_B_DT_PIN = loadIntFromConfig("ROTARY_ENCODER_B_DT_PIN", ROTARY_ENCODER_B_DT_PIN);
+  ROTARY_ENCODER_BUTTON_PIN = loadIntFromConfig("ROTARY_ENCODER_BUTTON_PIN", ROTARY_ENCODER_BUTTON_PIN);
+  ROTARY_ENCODER_STEPS = loadIntFromConfig("ROTARY_ENCODER_STEPS", ROTARY_ENCODER_STEPS);
+  GPIO_SPDIFF_OUTPUT = loadIntFromConfig("GPIO_SPDIFF_OUTPUT", GPIO_SPDIFF_OUTPUT);
+  GPIO_PA_EN_EXTERNAL = loadIntFromConfig("GPIO_PA_EN_EXTERNAL", GPIO_PA_EN_EXTERNAL);
 
   display_ssd1306 = new Adafruit_SSD1306(_screen_width, _screen_height, &I2C_2, -1);
 
@@ -831,6 +845,14 @@ void setup()
                     {
     request->send(200, "text/plain", "OK");
     actionPlayPause(); });
+  asyncWebServer.on("/amp", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {  if (request->hasParam("enable")) {
+                        int v = request->getParam("enable")->value().toInt();   
+                        setAmpEnabled(v == 1);
+                        request->send(200, "text/plain", "OK");
+                        return;
+                      }
+                      request->send(200, "text/plain", "FAILED"); });
   asyncWebServer.on("/playurl", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
       if (request->hasParam("playurl")) {
@@ -855,8 +877,12 @@ void setup()
     actionVolumeUp(); });
   asyncWebServer.on("/voldown", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
+      request->send(200, "text/plain", "OK");
+      actionVolumeDown(); });
+  asyncWebServer.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request)
+                    {
     request->send(200, "text/plain", "OK");
-    actionVolumeDown(); });
+    ESP.restart(); });
 
   asyncWebServer.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request)
                     {
@@ -887,6 +913,7 @@ void setup()
                       responseJson["DAC"] = DACNAME;
                       responseJson["PIO_ENV"] = PIO_ENV;
                       responseJson["uptime"] = millis();
+                      responseJson["resetReason"] = reason;
                       AsyncResponseStream *response = request->beginResponseStream("application/json");
                       serializeJsonPretty(responseJson, *response);
                       request->send(response); });
@@ -952,7 +979,7 @@ void setup()
   ArduinoOTA.begin();
 
   Serial.printf("Connect to DAC codec... ");
-  while (not dac.begin(IIC_DATA, IIC_CLK))
+  while (!dac.begin(IIC_DATA, IIC_CLK))
   {
     Serial.printf("Failed!\n");
     delay(1000);
@@ -960,11 +987,6 @@ void setup()
   Serial.printf("OK\r\n");
 
   setVolume(volume);
-
-  if (configJSON["GPIO_SPDIFF_OUTPUT"].is<int>())
-  {
-    GPIO_SPDIFF_OUTPUT = configJSON["GPIO_SPDIFF_OUTPUT"].as<int>();
-  }
 
   //  ac.DumpRegisters();
 #ifdef USE_ARDUINO_AUDIO_TOOLS
@@ -1048,12 +1070,29 @@ void setup()
     pinMode(ROTARY_ENCODER_BUTTON_PIN, INPUT_PULLUP);
   }
 
+  if (GPIO_PA_EN_EXTERNAL != GPIO_NUM_NC)
+  {
+    pinMode(GPIO_PA_EN_EXTERNAL, INPUT_PULLUP);
+  }
+
+
   memset(lastPlayedUrl, sizeof(lastPlayedUrl), 0);
   memset(lastPlayedStreamTitle, sizeof(lastPlayedStreamTitle), 0);
 
   // playUrl("http://live-bauerno.sharp-stream.com/radiorock_no_mp3?direct=true");
   setAmpEnabled(true);
-  changeStationIndex(0);
+
+  // after restart resume playing where we left
+  if (currentStationNum < 0)
+  {
+    changeStationIndex(0);
+  }
+  else
+  {
+    int realStationNum = currentStationNum;
+    currentStationNum = currentStationNum - 1;
+    changeStationIndex(realStationNum);
+  }
 }
 
 //-----------------------------------------------------------------------
@@ -1081,6 +1120,14 @@ void loop()
     {
       secondsWhenShown = timeinfo.tm_sec;
       drawDisplay();
+    }
+  }
+
+  if (GPIO_PA_EN_EXTERNAL != GPIO_NUM_NC)
+  {
+    if (digitalRead(GPIO_PA_EN_EXTERNAL) == LOW)
+    {
+      setAmpEnabled(false);
     }
   }
 
